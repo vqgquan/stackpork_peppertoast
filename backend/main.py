@@ -7,6 +7,7 @@ from typing import Optional
 from datetime import date
 from dotenv import load_dotenv
 import os
+import enum
 
 load_dotenv()
 
@@ -25,45 +26,121 @@ def get_db():
 
 # --- Models ---
 class Teacher(Base):
-    __tablename__ = "teachers"
+    __tablename__ = "students"
     id = Column(Integer, primary_key=True, index=True)
-    first_name = Column(String, nullable=False)
-    last_name = Column(String, nullable=False)
-    email = Column(String, unique=True, nullable=False)
-    subject = Column(String)
-    students = relationship("Student", back_populates="teacher")
+    name = Column(String, nullable=False)
+    phone = Column(String, nullable=False)
+    gender = Column(String, nullable=False)
+    email = Column(String, unique=True, nullable=True)
+    address = Column(String, nullable=True)
+    date_of_birth = Column(Date, nullable=True)
+    facebook = Column(String, nullable=True)
+    citizenship = Column(String, nullable=True)
+    passport_number = Column(String, unique=True, nullable=True)
+    customer_source = Column(String, nullable=True)
+    classes = relationship("Class", back_populates="teacher")
 
 class Student(Base):
     __tablename__ = "students"
     id = Column(Integer, primary_key=True, index=True)
-    first_name = Column(String, nullable=False)
-    last_name = Column(String, nullable=False)
-    email = Column(String, unique=True, nullable=False)
+    name = Column(String, nullable=False)
+    phone = Column(String, nullable=False)
+    gender = Column(String, nullable=False)
+    email = Column(String, unique=True, nullable=True)
+    address = Column(String, nullable=True)
     date_of_birth = Column(Date, nullable=True)
+    facebook = Column(String, nullable=True)
+    citizenship = Column(String, nullable=True)
+    passport_number = Column(String, unique=True, nullable=True)
+    customer_source = Column(String, nullable=True)
+    enrollments = relationship("Enrollment", back_populates="student")
+
+class ClassStatusEnum(str, enum.Enum):
+    active = "Active"
+    completed = "Completed"
+    cancelled = "Cancelled"
+
+class EnrollmentStatusEnum(str, enum.Enum):
+    enrolled = "Enrolled"
+    dropped = "Dropped"
+    completed = "Completed"
+
+class Class(Base):
+    __tablename__ = "classes"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    description = Column(String, nullable=True)
     teacher_id = Column(Integer, ForeignKey("teachers.id"), nullable=True)
-    teacher = relationship("Teacher", back_populates="students")
+    start_date = Column(Date, nullable=True)
+    end_date = Column(Date, nullable=True)
+    status = Column(Enum(ClassStatusEnum), nullable=False, default=ClassStatusEnum.active)
+    teacher = relationship("Teacher", back_populates="classes")
+    enrollments = relationship("Enrollment", back_populates="class_")
+
+class Enrollment(Base):
+    __tablename__ = "enrollments"
+    id = Column(Integer, primary_key=True, index=True)
+    student_id = Column(Integer, ForeignKey("students.id"), nullable=False)
+    class_id = Column(Integer, ForeignKey("classes.id"), nullable=False)
+    enrolled_date = Column(Date, nullable=False)
+    status = Column(Enum(EnrollmentStatusEnum), nullable=False, default=EnrollmentStatusEnum.enrolled)
+    student = relationship("Student", back_populates="enrollments")
+    class_ = relationship("Class", back_populates="enrollments")
 
 Base.metadata.create_all(bind=engine)
 
 # --- Schemas ---
 class TeacherCreate(BaseModel):
-    first_name: str
-    last_name: str
-    email: EmailStr
-    subject: Optional[str] = None
+    name: str
+    phone: str
+    gender: str
+    email: Optional[EmailStr] = None
+    address: Optional[str] = None
+    date_of_birth: Optional[date] = None
+    facebook: Optional[str] = None
+    citizenship: Optional[str] = None
+    passport_number: Optional[str] = None
+    customer_source: Optional[str] = None
 
 class TeacherOut(TeacherCreate):
     id: int
     class Config: from_attributes = True
 
 class StudentCreate(BaseModel):
-    first_name: str
-    last_name: str
-    email: EmailStr
+    name: str
+    phone: str
+    gender: str
+    email: Optional[EmailStr] = None
+    address: Optional[str] = None
     date_of_birth: Optional[date] = None
-    teacher_id: Optional[int] = None
+    facebook: Optional[str] = None
+    citizenship: Optional[str] = None
+    passport_number: Optional[str] = None
+    customer_source: Optional[str] = None
 
 class StudentOut(StudentCreate):
+    id: int
+    class Config: from_attributes = True
+
+class ClassCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    teacher_id: Optional[int] = None
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
+    status: ClassStatusEnum = ClassStatusEnum.active
+
+class ClassOut(ClassCreate):
+    id: int
+    class Config: from_attributes = True
+
+class EnrollmentCreate(BaseModel):
+    student_id: int
+    class_id: int
+    enrolled_date: date
+    status: EnrollmentStatusEnum = EnrollmentStatusEnum.enrolled
+
+class EnrollmentOut(EnrollmentCreate):
     id: int
     class Config: from_attributes = True
 
@@ -146,4 +223,94 @@ def delete_student(id: int, db: Session = Depends(get_db)):
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
     db.delete(student)
+    db.commit()
+
+# Classes
+@app.get("/classes", response_model=list[ClassOut])
+def get_classes(db: Session = Depends(get_db)):
+    return db.query(Class).all()
+
+@app.get("/classes/{id}", response_model=ClassOut)
+def get_class(id: int, db: Session = Depends(get_db)):
+    c = db.query(Class).filter(Class.id == id).first()
+    if not c:
+        raise HTTPException(status_code=404, detail="Class not found")
+    return c
+
+@app.post("/classes", response_model=ClassOut, status_code=201)
+def create_class(payload: ClassCreate, db: Session = Depends(get_db)):
+    c = Class(**payload.model_dump())
+    db.add(c)
+    db.commit()
+    db.refresh(c)
+    return c
+
+@app.put("/classes/{id}", response_model=ClassOut)
+def update_class(id: int, payload: ClassCreate, db: Session = Depends(get_db)):
+    c = db.query(Class).filter(Class.id == id).first()
+    if not c:
+        raise HTTPException(status_code=404, detail="Class not found")
+    for key, value in payload.model_dump().items():
+        setattr(c, key, value)
+    db.commit()
+    db.refresh(c)
+    return c
+
+@app.delete("/classes/{id}", status_code=204)
+def delete_class(id: int, db: Session = Depends(get_db)):
+    c = db.query(Class).filter(Class.id == id).first()
+    if not c:
+        raise HTTPException(status_code=404, detail="Class not found")
+    db.delete(c)
+    db.commit()
+
+# Enrollments
+@app.get("/enrollments", response_model=list[EnrollmentOut])
+def get_enrollments(db: Session = Depends(get_db)):
+    return db.query(Enrollment).all()
+
+@app.get("/enrollments/{id}", response_model=EnrollmentOut)
+def get_enrollment(id: int, db: Session = Depends(get_db)):
+    e = db.query(Enrollment).filter(Enrollment.id == id).first()
+    if not e:
+        raise HTTPException(status_code=404, detail="Enrollment not found")
+    return e
+
+@app.post("/enrollments", response_model=EnrollmentOut, status_code=201)
+def create_enrollment(payload: EnrollmentCreate, db: Session = Depends(get_db)):
+    # Validate student and class exist
+    if not db.query(Student).filter(Student.id == payload.student_id).first():
+        raise HTTPException(status_code=404, detail="Student not found")
+    if not db.query(Class).filter(Class.id == payload.class_id).first():
+        raise HTTPException(status_code=404, detail="Class not found")
+    # Prevent duplicate enrollment
+    existing = db.query(Enrollment).filter(
+        Enrollment.student_id == payload.student_id,
+        Enrollment.class_id == payload.class_id
+    ).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Student already enrolled in this class")
+    e = Enrollment(**payload.model_dump())
+    db.add(e)
+    db.commit()
+    db.refresh(e)
+    return e
+
+@app.put("/enrollments/{id}", response_model=EnrollmentOut)
+def update_enrollment(id: int, payload: EnrollmentCreate, db: Session = Depends(get_db)):
+    e = db.query(Enrollment).filter(Enrollment.id == id).first()
+    if not e:
+        raise HTTPException(status_code=404, detail="Enrollment not found")
+    for key, value in payload.model_dump().items():
+        setattr(e, key, value)
+    db.commit()
+    db.refresh(e)
+    return e
+
+@app.delete("/enrollments/{id}", status_code=204)
+def delete_enrollment(id: int, db: Session = Depends(get_db)):
+    e = db.query(Enrollment).filter(Enrollment.id == id).first()
+    if not e:
+        raise HTTPException(status_code=404, detail="Enrollment not found")
+    db.delete(e)
     db.commit()
