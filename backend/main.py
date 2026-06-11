@@ -8,6 +8,7 @@ from datetime import date
 from dotenv import load_dotenv
 import os
 import enum
+from fastapi.middleware.cors import CORSMiddleware
 
 load_dotenv()
 
@@ -146,6 +147,13 @@ class EnrollmentOut(EnrollmentCreate):
 
 # --- App ---
 app = FastAPI(title="School Management API")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # lock this down in production
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Teachers
 @app.get("/teachers", response_model=list[TeacherOut])
