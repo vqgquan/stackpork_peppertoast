@@ -1,60 +1,101 @@
-import React, { use, useEffect, useState } from "react"
+import { useEffect, useState, useMemo } from "react"
 import { getTeachers, deleteTeacher } from "../api"
+import SearchBar from "../components/SearchBar"
 
-export default function Teacher() {
-    const [teachers, setTeachers] = useState([])
-    const [loading, setLoading] = useState(true)
-    const [error, setError] = useState(null)
+const SEARCH_FIELDS = [
+  { key: "first_name", label: "First Name" },
+  { key: "last_name",  label: "Last Name" },
+  { key: "email",      label: "Email" },
+  { key: "subject",    label: "Subject" },
+]
 
-    useEffect(() => {
-        getTeachers()
-            .then(data => setTeachers(data))
-            .catch(err => setError(err.message))
-            .finally(() => setLoading(false))
-    }, [])
+export default function Teachers() {
+  const [teachers, setTeachers] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+  const [filters, setFilters] = useState({})
 
-    async function handleDelete(id) {
-        if (!confirm("Delete this teacher?")) return
-        try {
-            await deleteTeacher(id)
-            setTeachers(prev => prev.filter(t => t.id !== id))
-        } catch (err) {
-            alert("Error deleting teacher: " + err.message)
-        }
+  useEffect(() => {
+    getTeachers()
+      .then(data => setTeachers(data))
+      .catch(err => setError(err.message))
+      .finally(() => setLoading(false))
+  }, [])
+
+  const filtered = useMemo(() => {
+    if (Object.keys(filters).length === 0) return teachers
+    return teachers.filter(t =>
+      Object.entries(filters).every(([key, value]) =>
+        String(t[key] ?? "").toLowerCase().includes(value.toLowerCase())
+      )
+    )
+  }, [teachers, filters])
+
+  async function handleDelete(id) {
+    if (!confirm("Delete this teacher?")) return
+    try {
+      await deleteTeacher(id)
+      setTeachers(prev => prev.filter(t => t.id !== id))
+    } catch (err) {
+      alert("Error deleting teacher: " + err.message)
     }
+  }
 
-    if (loading) return <p className="p-8 text-slate-400">Loading...</p>
-    if (error) return <p className="p-8 text-red-500">{error}</p>
+  if (loading) return <p className="p-8 text-slate-400">Loading...</p>
+  if (error)   return <p className="p-8 text-red-500">{error}</p>
 
-    return (<div className="p-8">
+  return (
+    <div className="p-8">
       <h1 className="text-xl font-semibold mb-6">Teachers</h1>
-      <table className="w-full text-sm bg-white rounded-xl border border-slate-200">
-        <thead>
-          <tr className="border-b border-slate-100 text-left text-xs text-slate-500 uppercase">
-            <th className="px-4 py-3">Name</th>
-            <th className="px-4 py-3">Phone</th>
-            <th className="px-4 py-3">Email</th>
-            <th className="px-4 py-3"></th>
-          </tr>
-        </thead>
-        <tbody>
-          {teachers.map(t => (
-            <tr key={t.id} className="border-b border-slate-100 last:border-0">
-              <td className="px-4 py-3">{t.name}</td>
-              <td className="px-4 py-3">{t.phone}</td>
-              <td className="px-4 py-3">{t.email ?? '—'}</td>
-              <td className="px-4 py-3 text-right">
-                <button
-                  onClick={() => handleDelete(t.id)}
-                  className="text-xs text-red-400 hover:text-red-600"
-                >
-                  Delete
-                </button>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+
+      <SearchBar fields={SEARCH_FIELDS} onSearch={setFilters} />
+
+      {filtered.length === 0 ? (
+        <p className="text-sm text-slate-400">
+          {teachers.length === 0
+            ? "No teachers yet. Add one from the sidebar."
+            : "No teachers match your search."}
+        </p>
+      ) : (
+        <>
+          <table className="w-full text-sm bg-white rounded-xl border border-slate-200">
+            <thead>
+              <tr className="border-b border-slate-100 text-left text-xs text-slate-500 uppercase tracking-wide">
+                <th className="px-4 py-3">First Name</th>
+                <th className="px-4 py-3">Last Name</th>
+                <th className="px-4 py-3">Email</th>
+                <th className="px-4 py-3">Subject</th>
+                <th className="px-4 py-3"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map(t => (
+                <tr key={t.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
+                  <td className="px-4 py-3 font-medium text-slate-800">{t.first_name}</td>
+                  <td className="px-4 py-3 text-slate-600">{t.last_name}</td>
+                  <td className="px-4 py-3 text-slate-600">{t.email}</td>
+                  <td className="px-4 py-3">
+                    {t.subject
+                      ? <span className="inline-block text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">{t.subject}</span>
+                      : "—"}
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    <button
+                      onClick={() => handleDelete(t.id)}
+                      className="text-xs text-red-400 hover:text-red-600 font-medium"
+                    >
+                      Delete
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="text-xs text-slate-400 mt-2">
+            Showing {filtered.length} of {teachers.length} teachers
+          </p>
+        </>
+      )}
     </div>
   )
 }
