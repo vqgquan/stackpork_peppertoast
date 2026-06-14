@@ -1,4 +1,5 @@
 import { useEffect, useState, useMemo } from "react"
+import { Link } from "react-router-dom"
 import { getStudents, deleteStudent } from "../api"
 import SearchBar from "../components/SearchBar"
 
@@ -22,7 +23,6 @@ export default function Students() {
       .finally(() => setLoading(false))
   }, [])
 
-  // Filter client-side — all active filters must match (AND logic)
   const filtered = useMemo(() => {
     if (Object.keys(filters).length === 0) return students
     return students.filter(s =>
@@ -76,7 +76,11 @@ export default function Students() {
             <tbody>
               {filtered.map(s => (
                 <tr key={s.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
-                  <td className="px-4 py-3 font-medium text-slate-800">{s.name}</td>
+                  <td className="px-4 py-3 font-medium">
+                    <Link to={`/students/${s.id}`} className="text-blue-700 hover:underline">
+                      {s.name}
+                    </Link>
+                  </td>
                   <td className="px-4 py-3 text-slate-600">{s.phone}</td>
                   <td className="px-4 py-3">
                     <span className={`inline-block text-xs px-2 py-0.5 rounded-full font-medium ${

@@ -3,8 +3,7 @@ import { getTeachers, deleteTeacher } from "../api"
 import SearchBar from "../components/SearchBar"
 
 const SEARCH_FIELDS = [
-  { key: "first_name", label: "First Name" },
-  { key: "last_name",  label: "Last Name" },
+  { key: "name",       label: "Name" },
   { key: "email",      label: "Email" },
   { key: "subject",    label: "Subject" },
 ]
@@ -61,8 +60,7 @@ export default function Teachers() {
           <table className="w-full text-sm bg-white rounded-xl border border-slate-200">
             <thead>
               <tr className="border-b border-slate-100 text-left text-xs text-slate-500 uppercase tracking-wide">
-                <th className="px-4 py-3">First Name</th>
-                <th className="px-4 py-3">Last Name</th>
+                <th className="px-4 py-3">Name</th>
                 <th className="px-4 py-3">Email</th>
                 <th className="px-4 py-3">Subject</th>
                 <th className="px-4 py-3"></th>
@@ -71,8 +69,7 @@ export default function Teachers() {
             <tbody>
               {filtered.map(t => (
                 <tr key={t.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
-                  <td className="px-4 py-3 font-medium text-slate-800">{t.first_name}</td>
-                  <td className="px-4 py-3 text-slate-600">{t.last_name}</td>
+                  <td className="px-4 py-3 font-medium text-slate-800">{t.name}</td>
                   <td className="px-4 py-3 text-slate-600">{t.email}</td>
                   <td className="px-4 py-3">
                     {t.subject

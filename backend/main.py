@@ -1,10 +1,10 @@
 from fastapi import FastAPI, Depends, HTTPException
-from sqlalchemy import create_engine, Column, Integer, String, Date, ForeignKey, Enum
+from sqlalchemy import create_engine, Column, Integer, String, Date, Time, ForeignKey, Enum
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 from pydantic import BaseModel, EmailStr
 from typing import Optional
-from datetime import date
+from datetime import date, time
 from dotenv import load_dotenv
 import os
 import enum
@@ -24,6 +24,26 @@ def get_db():
         yield db
     finally:
         db.close()
+
+# --- Enums ---
+class ClassStatusEnum(str, enum.Enum):
+    active = "Active"
+    completed = "Completed"
+    cancelled = "Cancelled"
+
+class EnrollmentStatusEnum(str, enum.Enum):
+    enrolled = "Enrolled"
+    dropped = "Dropped"
+    completed = "Completed"
+
+class DayOfWeekEnum(str, enum.Enum):
+    monday = "Monday"
+    tuesday = "Tuesday"
+    wednesday = "Wednesday"
+    thursday = "Thursday"
+    friday = "Friday"
+    saturday = "Saturday"
+    sunday = "Sunday"
 
 # --- Models ---
 class Teacher(Base):
@@ -56,16 +76,6 @@ class Student(Base):
     customer_source = Column(String, nullable=True)
     enrollments = relationship("Enrollment", back_populates="student")
 
-class ClassStatusEnum(str, enum.Enum):
-    active = "Active"
-    completed = "Completed"
-    cancelled = "Cancelled"
-
-class EnrollmentStatusEnum(str, enum.Enum):
-    enrolled = "Enrolled"
-    dropped = "Dropped"
-    completed = "Completed"
-
 class Class(Base):
     __tablename__ = "classes"
     id = Column(Integer, primary_key=True, index=True)
@@ -77,6 +87,16 @@ class Class(Base):
     status = Column(Enum(ClassStatusEnum), nullable=False, default=ClassStatusEnum.active)
     teacher = relationship("Teacher", back_populates="classes")
     enrollments = relationship("Enrollment", back_populates="class_")
+    schedules = relationship("ClassSchedule", back_populates="class_", cascade="all, delete-orphan")
+
+class ClassSchedule(Base):
+    __tablename__ = "class_schedules"
+    id = Column(Integer, primary_key=True, index=True)
+    class_id = Column(Integer, ForeignKey("classes.id"), nullable=False)
+    day_of_week = Column(Enum(DayOfWeekEnum), nullable=False)
+    start_time = Column(Time, nullable=False)
+    end_time = Column(Time, nullable=False)
+    class_ = relationship("Class", back_populates="schedules")
 
 class Enrollment(Base):
     __tablename__ = "enrollments"
@@ -123,6 +143,16 @@ class StudentOut(StudentCreate):
     id: int
     class Config: from_attributes = True
 
+# --- Class schedule schemas ---
+class ClassScheduleCreate(BaseModel):
+    day_of_week: DayOfWeekEnum
+    start_time: time
+    end_time: time
+
+class ClassScheduleOut(ClassScheduleCreate):
+    id: int
+    class Config: from_attributes = True
+
 class ClassCreate(BaseModel):
     name: str
     description: Optional[str] = None
@@ -130,9 +160,17 @@ class ClassCreate(BaseModel):
     start_date: Optional[date] = None
     end_date: Optional[date] = None
     status: ClassStatusEnum = ClassStatusEnum.active
+    schedules: list[ClassScheduleCreate] = []
 
-class ClassOut(ClassCreate):
+class ClassOut(BaseModel):
     id: int
+    name: str
+    description: Optional[str] = None
+    teacher_id: Optional[int] = None
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
+    status: ClassStatusEnum
+    schedules: list[ClassScheduleOut] = []
     class Config: from_attributes = True
 
 class EnrollmentCreate(BaseModel):
@@ -145,12 +183,25 @@ class EnrollmentOut(EnrollmentCreate):
     id: int
     class Config: from_attributes = True
 
+# --- Student detail / schedule schemas ---
+class StudentScheduleEntryOut(BaseModel):
+    class_id: int
+    class_name: str
+    day_of_week: DayOfWeekEnum
+    start_time: time
+    end_time: time
+    teacher_name: Optional[str] = None
+
+class StudentDetailOut(StudentOut):
+    schedule: list[StudentScheduleEntryOut] = []
+    classes: list[ClassOut] = []
+
 # --- App ---
 app = FastAPI(title="School Management API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # lock this down in production
+    allow_origins=["*"],  
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -206,6 +257,36 @@ def get_student(id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Student not found")
     return student
 
+@app.get("/students/{id}/detail", response_model=StudentDetailOut)
+def get_student_detail(id: int, db: Session = Depends(get_db)):
+    student = db.query(Student).filter(Student.id == id).first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+
+    schedule: list[StudentScheduleEntryOut] = []
+    classes: list[Class] = []
+
+    for enrollment in student.enrollments:
+        if enrollment.status != EnrollmentStatusEnum.enrolled:
+            continue
+        c = enrollment.class_
+        classes.append(c)
+        teacher_name = c.teacher.name if c.teacher else None
+        for sched in c.schedules:
+            schedule.append(StudentScheduleEntryOut(
+                class_id=c.id,
+                class_name=c.name,
+                day_of_week=sched.day_of_week,
+                start_time=sched.start_time,
+                end_time=sched.end_time,
+                teacher_name=teacher_name,
+            ))
+
+    result = StudentDetailOut.model_validate(student)
+    result.schedule = schedule
+    result.classes = [ClassOut.model_validate(c) for c in classes]
+    return result
+
 @app.post("/students", response_model=StudentOut, status_code=201)
 def create_student(student: StudentCreate, db: Session = Depends(get_db)):
     db_student = Student(**student.model_dump())
@@ -247,8 +328,13 @@ def get_class(id: int, db: Session = Depends(get_db)):
 
 @app.post("/classes", response_model=ClassOut, status_code=201)
 def create_class(payload: ClassCreate, db: Session = Depends(get_db)):
-    c = Class(**payload.model_dump())
+    data = payload.model_dump()
+    schedules_data = data.pop("schedules", [])
+    c = Class(**data)
     db.add(c)
+    db.flush()  # assigns c.id before commit so we can attach schedules
+    for sched in schedules_data:
+        db.add(ClassSchedule(class_id=c.id, **sched))
     db.commit()
     db.refresh(c)
     return c
@@ -258,8 +344,14 @@ def update_class(id: int, payload: ClassCreate, db: Session = Depends(get_db)):
     c = db.query(Class).filter(Class.id == id).first()
     if not c:
         raise HTTPException(status_code=404, detail="Class not found")
-    for key, value in payload.model_dump().items():
+    data = payload.model_dump()
+    schedules_data = data.pop("schedules", [])
+    for key, value in data.items():
         setattr(c, key, value)
+    # Replace all existing schedule rows with the new set
+    db.query(ClassSchedule).filter(ClassSchedule.class_id == id).delete()
+    for sched in schedules_data:
+        db.add(ClassSchedule(class_id=id, **sched))
     db.commit()
     db.refresh(c)
     return c

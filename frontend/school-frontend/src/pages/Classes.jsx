@@ -14,6 +14,19 @@ const STATUS_STYLES = {
   Cancelled: "bg-red-50 text-red-600",
 }
 
+const DAY_ABBREV = {
+  Monday: "Mon", Tuesday: "Tue", Wednesday: "Wed", Thursday: "Thu",
+  Friday: "Fri", Saturday: "Sat", Sunday: "Sun",
+}
+
+function formatTime(t) {
+  if (!t) return ""
+  const [h, m] = t.split(":").map(Number)
+  const period = h >= 12 ? "PM" : "AM"
+  const hour12 = h % 12 === 0 ? 12 : h % 12
+  return `${hour12}:${String(m).padStart(2, "0")} ${period}`
+}
+
 export default function Classes() {
   const [classes, setClasses] = useState([])
   const [loading, setLoading] = useState(true)
@@ -70,6 +83,7 @@ export default function Classes() {
                 <th className="px-4 py-3">Description</th>
                 <th className="px-4 py-3">Teacher ID</th>
                 <th className="px-4 py-3">Status</th>
+                <th className="px-4 py-3">Schedule</th>
                 <th className="px-4 py-3">Start Date</th>
                 <th className="px-4 py-3">End Date</th>
                 <th className="px-4 py-3"></th>
@@ -85,6 +99,17 @@ export default function Classes() {
                     <span className={`inline-block text-xs px-2 py-0.5 rounded-full font-medium ${STATUS_STYLES[c.status] ?? "bg-slate-100 text-slate-600"}`}>
                       {c.status}
                     </span>
+                  </td>
+                  <td className="px-4 py-3">
+                    {c.schedules && c.schedules.length > 0 ? (
+                      <div className="flex flex-wrap gap-1">
+                        {c.schedules.map(s => (
+                          <span key={s.id} className="inline-block text-xs px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 whitespace-nowrap">
+                            {DAY_ABBREV[s.day_of_week]} {formatTime(s.start_time)}–{formatTime(s.end_time)}
+                          </span>
+                        ))}
+                      </div>
+                    ) : "—"}
                   </td>
                   <td className="px-4 py-3 text-slate-600">{c.start_date ?? "—"}</td>
                   <td className="px-4 py-3 text-slate-600">{c.end_date ?? "—"}</td>

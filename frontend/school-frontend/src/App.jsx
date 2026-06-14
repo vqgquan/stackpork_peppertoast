@@ -5,6 +5,7 @@ import Classes from "./pages/Classes";
 import NewClass from "./pages/NewClass";
 import Students from "./pages/Students";
 import NewStudent from "./pages/NewStudent";
+import StudentDetail from "./pages/StudentDetail";
 
 export default function App() {
   const location = useLocation();
@@ -44,6 +45,7 @@ export default function App() {
           <Route path="/classes/new" element={<NewClass />} />
           <Route path="/students" element={<Students />} />
           <Route path="/students/new" element={<NewStudent />} />
+          <Route path="/students/:id" element={<StudentDetail />} />
         </Routes>
       </main>
     </div>

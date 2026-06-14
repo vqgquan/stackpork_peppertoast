@@ -1,24 +1,5 @@
 import { useState, useRef, useEffect } from "react"
 
-/**
- * SearchBar — reusable multi-attribute search component
- *
- * Props:
- *   fields  — array of { key, label } defining which attributes are searchable
- *   onSearch(filters) — called whenever filters change
- *                       filters = { field1: "value", field2: "value", ... }
- *
- * Usage example (Students page):
- *   <SearchBar
- *     fields={[
- *       { key: "name",   label: "Name" },
- *       { key: "phone",  label: "Phone" },
- *       { key: "gender", label: "Gender" },
- *       { key: "email",  label: "Email" },
- *     ]}
- *     onSearch={setFilters}
- *   />
- */
 export default function SearchBar({ fields = [], onSearch }) {
   // Active field being typed into — default to first field
   const [activeField, setActiveField] = useState(fields[0]?.key ?? "")
