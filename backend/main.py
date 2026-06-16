@@ -193,7 +193,6 @@ class StudentScheduleEntryOut(BaseModel):
     teacher_name: Optional[str] = None
 
 class StudentDetailOut(StudentOut):
-    schedule: list[StudentScheduleEntryOut] = []
     classes: list[ClassOut] = []
 
 # --- App ---
@@ -263,27 +262,13 @@ def get_student_detail(id: int, db: Session = Depends(get_db)):
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
 
-    schedule: list[StudentScheduleEntryOut] = []
-    classes: list[Class] = []
-
-    for enrollment in student.enrollments:
-        if enrollment.status != EnrollmentStatusEnum.enrolled:
-            continue
-        c = enrollment.class_
-        classes.append(c)
-        teacher_name = c.teacher.name if c.teacher else None
-        for sched in c.schedules:
-            schedule.append(StudentScheduleEntryOut(
-                class_id=c.id,
-                class_name=c.name,
-                day_of_week=sched.day_of_week,
-                start_time=sched.start_time,
-                end_time=sched.end_time,
-                teacher_name=teacher_name,
-            ))
+    classes = [
+        enrollment.class_
+        for enrollment in student.enrollments
+        if enrollment.status == EnrollmentStatusEnum.enrolled
+    ]
 
     result = StudentDetailOut.model_validate(student)
-    result.schedule = schedule
     result.classes = [ClassOut.model_validate(c) for c in classes]
     return result
 
