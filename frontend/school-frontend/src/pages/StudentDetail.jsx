@@ -29,19 +29,23 @@ export default function StudentDetail() {
   if (error)   return <p className="p-8 text-red-500">{error}</p>
   if (!student) return null
 
-  // Group schedule entries by day of week — a student can have
-  // multiple classes (each with its own time) on the same day,
-  // and different schedules across different days.
+  // 1 day can have multiple entries.
   const byDay = {}
   DAYS.forEach(d => byDay[d] = [])
-  student.schedule.forEach(entry => {
-    if (byDay[entry.day_of_week]) byDay[entry.day_of_week].push(entry)
+  student.classes.forEach(cls => {
+    cls.schedules.forEach(sched => {
+      byDay[sched.day_of_week].push({
+        class_id: cls.id,
+        class_name: cls.name,
+        start_time: sched.start_time,
+        end_time: sched.end_time,
+      })
+    })
   })
-  DAYS.forEach(d => byDay[d].sort((a, b) => (a.start_time ?? "").localeCompare(b.start_time ?? "")))
+  DAYS.forEach(d => byDay[d].sort((a, b) => a.start_time.localeCompare(b.start_time)))
 
-  // Classes the student is enrolled in but have no schedule set at all
-  const scheduledClassIds = new Set(student.schedule.map(s => s.class_id))
-  const unscheduledClasses = student.classes.filter(c => !scheduledClassIds.has(c.id))
+  const hasAnySchedule = student.classes.some(c => c.schedules.length > 0)
+  const unscheduledClasses = student.classes.filter(c => c.schedules.length === 0)
 
   return (
     <div className="p-8 max-w-5xl">
@@ -82,7 +86,7 @@ export default function StudentDetail() {
       <div className="bg-white border border-slate-200 rounded-xl p-6">
         <h2 className="text-lg font-semibold text-slate-900 mb-4">Weekly Schedule</h2>
 
-        {student.schedule.length === 0 ? (
+        {!hasAnySchedule ? (
           <p className="text-sm text-slate-400">This student has no scheduled classes yet.</p>
         ) : (
           <div className="grid grid-cols-7 gap-2">
@@ -104,9 +108,6 @@ export default function StudentDetail() {
                         <p className="text-blue-500 mt-0.5">
                           {formatTime(entry.start_time)} – {formatTime(entry.end_time)}
                         </p>
-                        {entry.teacher_name && (
-                          <p className="text-blue-400 mt-0.5 truncate">{entry.teacher_name}</p>
-                        )}
                       </div>
                     ))
                   )}

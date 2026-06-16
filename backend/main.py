@@ -86,7 +86,7 @@ class Class(Base):
     end_date = Column(Date, nullable=True)
     status = Column(Enum(ClassStatusEnum), nullable=False, default=ClassStatusEnum.active)
     teacher = relationship("Teacher", back_populates="classes")
-    enrollments = relationship("Enrollment", back_populates="f") # where is the "f" pointing to?
+    enrollments = relationship("Enrollment", back_populates="class_")
     schedules = relationship("ClassSchedule", back_populates="class_", cascade="all, delete-orphan")
 
 class ClassSchedule(Base):
