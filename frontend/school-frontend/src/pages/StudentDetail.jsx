@@ -1,8 +1,16 @@
-import { useEffect, useState } from "react"
+import { useEffect, useState, useRef } from "react"
 import { useParams, Link } from "react-router-dom"
 import { getStudentDetail } from "../api"
 
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+const HOUR_HEIGHT = 48   // px per hour row
+const TOTAL_HOURS = 24
+const GUTTER_WIDTH = 52  // px width of the time-label column
+
+function toMinutes(t) {
+  const [h, m] = t.split(":").map(Number)
+  return h * 60 + m
+}
 
 function formatTime(t) {
   if (!t) return ""
@@ -10,6 +18,161 @@ function formatTime(t) {
   const period = h >= 12 ? "PM" : "AM"
   const hour12 = h % 12 === 0 ? 12 : h % 12
   return `${hour12}:${String(m).padStart(2, "0")} ${period}`
+}
+
+function hourLabel(h) {
+  const period = h >= 12 ? "pm" : "am"
+  const h12 = h % 12 === 0 ? 12 : h % 12
+  return `${h12}${period}`
+}
+
+// Groups overlapping events into clusters, then assigns each event a
+// "track" (column) within its cluster so overlapping classes render
+// side-by-side instead of on top of each other.
+function layoutDayEvents(events) {
+  const sorted = [...events].sort((a, b) => a.startMin - b.startMin)
+  const clusters = []
+  let current = []
+  let currentEnd = -Infinity
+
+  for (const e of sorted) {
+    if (current.length === 0 || e.startMin < currentEnd) {
+      current.push(e)
+      currentEnd = Math.max(currentEnd, e.endMin)
+    } else {
+      clusters.push(current)
+      current = [e]
+      currentEnd = e.endMin
+    }
+  }
+  if (current.length) clusters.push(current)
+
+  const result = []
+  for (const cluster of clusters) {
+    const trackEnds = []
+    const clusterPositioned = []
+    for (const e of cluster) {
+      let track = trackEnds.findIndex(end => end <= e.startMin)
+      if (track === -1) {
+        track = trackEnds.length
+        trackEnds.push(e.endMin)
+      } else {
+        trackEnds[track] = e.endMin
+      }
+      clusterPositioned.push({ ...e, track })
+    }
+    const trackCount = trackEnds.length
+    clusterPositioned.forEach(e => result.push({ ...e, trackCount }))
+  }
+  return result
+}
+
+function WeeklyTimetable({ classes }) {
+  const scrollRef = useRef(null)
+
+  // Scroll to a sensible default start time (7am) on mount
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = 7 * HOUR_HEIGHT - 16
+    }
+  }, [])
+
+  const eventsByDay = {}
+  DAYS.forEach(d => eventsByDay[d] = [])
+
+  classes.forEach(cls => {
+    cls.schedules.forEach(sched => {
+      const startMin = toMinutes(sched.start_time)
+      const endMin = toMinutes(sched.end_time)
+      if (eventsByDay[sched.day_of_week]) {
+        eventsByDay[sched.day_of_week].push({
+          id: `${cls.id}-${sched.id}`,
+          class_name: cls.name,
+          start_time: sched.start_time,
+          end_time: sched.end_time,
+          startMin,
+          endMin,
+        })
+      }
+    })
+  })
+
+  const totalHeight = TOTAL_HOURS * HOUR_HEIGHT
+  const hourLineGradient = `repeating-linear-gradient(to bottom, transparent, transparent ${HOUR_HEIGHT - 1}px, #f1f5f9 ${HOUR_HEIGHT - 1}px, #f1f5f9 ${HOUR_HEIGHT}px)`
+
+  return (
+    <div className="border border-slate-200 rounded-xl overflow-hidden">
+      {/* Single scroll container — header and grid live inside it together
+          so they always share the exact same width, scrollbar included. */}
+      <div ref={scrollRef} className="overflow-y-auto" style={{ maxHeight: 560 }}>
+
+        {/* Header row — sticky inside the scroll container, not a separate sibling */}
+        <div className="flex sticky top-0 z-20 bg-white border-b border-slate-200">
+          <div style={{ width: GUTTER_WIDTH }} className="flex-shrink-0 bg-white" />
+          {DAYS.map(day => (
+            <div
+              key={day}
+              className="flex-1 text-center text-xs font-semibold text-slate-600 py-2 border-l border-slate-100 first:border-l-0 bg-white"
+            >
+              {day.slice(0, 3)}
+            </div>
+          ))}
+        </div>
+
+        <div className="flex">
+          {/* Time label gutter */}
+          <div style={{ width: GUTTER_WIDTH, height: totalHeight }} className="relative flex-shrink-0">
+            {Array.from({ length: TOTAL_HOURS }).map((_, h) => (
+              <div
+                key={h}
+                className="absolute right-1.5 text-[10px] text-slate-400"
+                style={{ top: h * HOUR_HEIGHT + 2 }}
+              >
+                {hourLabel(h)}
+              </div>
+            ))}
+          </div>
+
+          {/* Day columns */}
+          <div className="relative flex-1" style={{ height: totalHeight }}>
+            {/* hour gridlines, full width */}
+            <div className="absolute inset-0 pointer-events-none" style={{ backgroundImage: hourLineGradient }} />
+
+            <div className="absolute inset-0 grid grid-cols-7">
+              {DAYS.map(day => (
+                <div key={day} className="relative border-l border-slate-100 first:border-l-0">
+                  {layoutDayEvents(eventsByDay[day]).map(e => {
+                    const top = (e.startMin / 60) * HOUR_HEIGHT
+                    const height = Math.max(((e.endMin - e.startMin) / 60) * HOUR_HEIGHT, 22)
+                    const widthPct = 100 / e.trackCount
+                    const leftPct = e.track * widthPct
+                    return (
+                      <div
+                        key={e.id}
+                        className="absolute bg-blue-100 border border-blue-300 rounded-md px-1.5 py-1 overflow-hidden hover:z-10 hover:shadow-md transition-shadow"
+                        style={{
+                          top,
+                          height,
+                          left: `calc(${leftPct}% + 2px)`,
+                          width: `calc(${widthPct}% - 4px)`,
+                        }}
+                        title={`${e.class_name} · ${formatTime(e.start_time)} – ${formatTime(e.end_time)}`}
+                      >
+                        <p className="text-[11px] font-medium text-blue-800 truncate leading-tight">{e.class_name}</p>
+                        <p className="text-[10px] text-blue-500 truncate leading-tight">
+                          {formatTime(e.start_time)} – {formatTime(e.end_time)}
+                        </p>
+                      </div>
+                    )
+                  })}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
 }
 
 export default function StudentDetail() {
@@ -29,26 +192,11 @@ export default function StudentDetail() {
   if (error)   return <p className="p-8 text-red-500">{error}</p>
   if (!student) return null
 
-  // 1 day can have multiple entries.
-  const byDay = {}
-  DAYS.forEach(d => byDay[d] = [])
-  student.classes.forEach(cls => {
-    cls.schedules.forEach(sched => {
-      byDay[sched.day_of_week].push({
-        class_id: cls.id,
-        class_name: cls.name,
-        start_time: sched.start_time,
-        end_time: sched.end_time,
-      })
-    })
-  })
-  DAYS.forEach(d => byDay[d].sort((a, b) => a.start_time.localeCompare(b.start_time)))
-
   const hasAnySchedule = student.classes.some(c => c.schedules.length > 0)
   const unscheduledClasses = student.classes.filter(c => c.schedules.length === 0)
 
   return (
-    <div className="p-8 max-w-5xl">
+    <div className="p-8 max-w-6xl">
       <Link to="/students" className="text-sm text-blue-600 hover:underline mb-4 inline-block">
         ← Back to Students
       </Link>
@@ -82,39 +230,14 @@ export default function StudentDetail() {
         </div>
       </div>
 
-      {/* Weekly schedule */}
+      {/* Weekly timetable */}
       <div className="bg-white border border-slate-200 rounded-xl p-6">
         <h2 className="text-lg font-semibold text-slate-900 mb-4">Weekly Schedule</h2>
 
         {!hasAnySchedule ? (
           <p className="text-sm text-slate-400">This student has no scheduled classes yet.</p>
         ) : (
-          <div className="grid grid-cols-7 gap-2">
-            {DAYS.map(day => (
-              <div key={day} className="min-h-[140px]">
-                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2 text-center">
-                  {day.slice(0, 3)}
-                </p>
-                <div className="space-y-2">
-                  {byDay[day].length === 0 ? (
-                    <div className="border border-dashed border-slate-100 rounded-lg h-16" />
-                  ) : (
-                    byDay[day].map((entry, i) => (
-                      <div
-                        key={`${entry.class_id}-${i}`}
-                        className="bg-blue-50 border border-blue-100 rounded-lg p-2 text-xs"
-                      >
-                        <p className="font-medium text-blue-800 truncate">{entry.class_name}</p>
-                        <p className="text-blue-500 mt-0.5">
-                          {formatTime(entry.start_time)} – {formatTime(entry.end_time)}
-                        </p>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
+          <WeeklyTimetable classes={student.classes} />
         )}
 
         {unscheduledClasses.length > 0 && (
