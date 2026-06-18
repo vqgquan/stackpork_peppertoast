@@ -192,9 +192,12 @@ class StudentScheduleEntryOut(BaseModel):
     end_time: time
     teacher_name: Optional[str] = None
 
-class StudentDetailOut(StudentOut):
-    classes: list[ClassOut] = []
+class StudentClassOut(ClassOut):
+    enrollment_id: int
 
+class StudentDetailOut(StudentOut):
+    classes: list[StudentClassOut] = []
+    
 # --- App ---
 app = FastAPI(title="School Management API")
 
@@ -262,14 +265,16 @@ def get_student_detail(id: int, db: Session = Depends(get_db)):
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
 
-    classes = [
-        enrollment.class_
-        for enrollment in student.enrollments
-        if enrollment.status == EnrollmentStatusEnum.enrolled
-    ]
+    classes = []
+    for enrollment in student.enrollments:
+        if enrollment.status != EnrollmentStatusEnum.enrolled:
+            continue
+        class_data = ClassOut.model_validate(enrollment.class_).model_dump()
+        class_out = StudentClassOut(**class_data, enrollment_id=enrollment.id)
+        classes.append(class_out)
 
     result = StudentDetailOut.model_validate(student)
-    result.classes = [ClassOut.model_validate(c) for c in classes]
+    result.classes = classes
     return result
 
 @app.post("/students", response_model=StudentOut, status_code=201)

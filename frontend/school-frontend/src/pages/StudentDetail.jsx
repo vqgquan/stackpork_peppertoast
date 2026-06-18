@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from "react"
 import { useParams, Link } from "react-router-dom"
-import { getStudentDetail } from "../api"
+import { getStudentDetail, getClasses, createEnrollment, deleteEnrollment } from "../api"
 
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 const HOUR_HEIGHT = 48   // px per hour row
@@ -24,6 +24,13 @@ function hourLabel(h) {
   const period = h >= 12 ? "pm" : "am"
   const h12 = h % 12 === 0 ? 12 : h % 12
   return `${h12}${period}`
+}
+
+function scheduleSummary(cls) {
+  if (!cls.schedules || cls.schedules.length === 0) return "No schedule set"
+  return cls.schedules
+    .map(s => `${s.day_of_week.slice(0, 3)} ${formatTime(s.start_time)}–${formatTime(s.end_time)}`)
+    .join(", ")
 }
 
 // Groups overlapping events into clusters, then assigns each event a
@@ -178,15 +185,56 @@ function WeeklyTimetable({ classes }) {
 export default function StudentDetail() {
   const { id } = useParams()
   const [student, setStudent] = useState(null)
+  const [allClasses, setAllClasses] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
+  const [selectedClassId, setSelectedClassId] = useState("")
+  const [enrolling, setEnrolling] = useState(false)
+  const [enrollError, setEnrollError] = useState(null)
+
+  function loadStudent() {
+    return getStudentDetail(id).then(data => setStudent(data))
+  }
+
   useEffect(() => {
-    getStudentDetail(id)
-      .then(data => setStudent(data))
+    setLoading(true)
+    setError(null)
+    Promise.all([loadStudent(), getClasses().then(setAllClasses)])
       .catch(err => setError(err.message))
       .finally(() => setLoading(false))
   }, [id])
+
+  async function handleEnroll(e) {
+    e.preventDefault()
+    if (!selectedClassId) return
+    setEnrolling(true)
+    setEnrollError(null)
+    try {
+      await createEnrollment({
+        student_id: Number(id),
+        class_id: Number(selectedClassId),
+        enrolled_date: new Date().toISOString().slice(0, 10),
+        status: "Enrolled",
+      })
+      setSelectedClassId("")
+      await loadStudent()   // refreshes classes + timetable automatically
+    } catch (err) {
+      setEnrollError(err.message)
+    } finally {
+      setEnrolling(false)
+    }
+  }
+
+  async function handleUnenroll(enrollmentId, className) {
+    if (!confirm(`Remove "${className}" from this student?`)) return
+    try {
+      await deleteEnrollment(enrollmentId)
+      await loadStudent()   // refreshes classes + timetable automatically
+    } catch (err) {
+      alert("Error removing enrollment: " + err.message)
+    }
+  }
 
   if (loading) return <p className="p-8 text-slate-400">Loading...</p>
   if (error)   return <p className="p-8 text-red-500">{error}</p>
@@ -194,6 +242,11 @@ export default function StudentDetail() {
 
   const hasAnySchedule = student.classes.some(c => c.schedules.length > 0)
   const unscheduledClasses = student.classes.filter(c => c.schedules.length === 0)
+
+  const enrolledIds = new Set(student.classes.map(c => c.id))
+  const availableClasses = allClasses.filter(
+    c => !enrolledIds.has(c.id) && c.status === "Active"
+  )
 
   return (
     <div className="p-8 max-w-6xl">
@@ -228,6 +281,68 @@ export default function StudentDetail() {
           <Info label="Citizenship" value={student.citizenship} />
           <Info label="Passport Number" value={student.passport_number} />
         </div>
+      </div>
+
+      {/* Enrolled classes + enroll form */}
+      <div className="bg-white border border-slate-200 rounded-xl p-6 mb-6">
+        <h2 className="text-lg font-semibold text-slate-900 mb-4">Enrolled Classes</h2>
+
+        {student.classes.length === 0 ? (
+          <p className="text-sm text-slate-400 mb-5">Not enrolled in any classes yet.</p>
+        ) : (
+          <div className="space-y-2 mb-5">
+            {student.classes.map(c => (
+              <div
+                key={c.id}
+                className="flex items-center justify-between border border-slate-100 rounded-lg px-3 py-2"
+              >
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-slate-800 truncate">{c.name}</p>
+                  <p className="text-xs text-slate-400 truncate">{scheduleSummary(c)}</p>
+                </div>
+                <button
+                  onClick={() => handleUnenroll(c.enrollment_id, c.name)}
+                  className="text-xs text-red-400 hover:text-red-600 font-medium flex-shrink-0 ml-3"
+                >
+                  Remove
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <form onSubmit={handleEnroll} className="flex items-end gap-2 border-t border-slate-100 pt-4">
+          <div className="flex-1">
+            <label className="block text-xs font-medium text-slate-600 mb-1">Enroll in a class</label>
+            <select
+              value={selectedClassId}
+              onChange={e => setSelectedClassId(e.target.value)}
+              className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+            >
+              <option value="">— Select a class —</option>
+              {availableClasses.map(c => (
+                <option key={c.id} value={c.id}>
+                  {c.name} ({scheduleSummary(c)})
+                </option>
+              ))}
+            </select>
+            {availableClasses.length === 0 && allClasses.length > 0 && (
+              <p className="text-xs text-slate-400 mt-1">
+                No other active classes available to enroll in.
+              </p>
+            )}
+          </div>
+          <button
+            type="submit"
+            disabled={!selectedClassId || enrolling}
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-colors"
+          >
+            {enrolling ? "Enrolling..." : "Enroll"}
+          </button>
+        </form>
+        {enrollError && (
+          <p className="text-sm text-red-600 mt-2">{enrollError}</p>
+        )}
       </div>
 
       {/* Weekly timetable */}

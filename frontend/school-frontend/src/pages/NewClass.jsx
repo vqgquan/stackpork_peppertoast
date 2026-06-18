@@ -1,6 +1,8 @@
 import { useState } from "react"
 import { createClass } from "../api"
 
+const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
 const EMPTY = {
   name: "",
   description: "",
@@ -10,8 +12,11 @@ const EMPTY = {
   status: "Active",
 }
 
+const EMPTY_SCHEDULE_ROW = { day_of_week: "Monday", start_time: "", end_time: "" }
+
 export default function NewClass() {
   const [form, setForm] = useState(EMPTY)
+  const [schedules, setSchedules] = useState([{ ...EMPTY_SCHEDULE_ROW }])
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState(null)
   const [success, setSuccess] = useState(false)
@@ -20,22 +25,45 @@ export default function NewClass() {
     setForm(prev => ({ ...prev, [e.target.name]: e.target.value }))
   }
 
+  function handleScheduleChange(index, field, value) {
+    setSchedules(prev => prev.map((row, i) => i === index ? { ...row, [field]: value } : row))
+  }
+
+  function addScheduleRow() {
+    setSchedules(prev => [...prev, { ...EMPTY_SCHEDULE_ROW }])
+  }
+
+  function removeScheduleRow(index) {
+    setSchedules(prev => prev.filter((_, i) => i !== index))
+  }
+
   async function handleSubmit(e) {
     e.preventDefault()
     setSubmitting(true)
     setError(null)
     setSuccess(false)
     try {
+      // Only keep schedule rows where both times are filled in
+      const validSchedules = schedules
+        .filter(row => row.start_time && row.end_time)
+        .map(row => ({
+          day_of_week: row.day_of_week,
+          start_time: row.start_time,
+          end_time: row.end_time,
+        }))
+
       const payload = {
         ...form,
         teacher_id: form.teacher_id !== "" ? Number(form.teacher_id) : null,
         start_date: form.start_date || null,
         end_date: form.end_date || null,
         description: form.description || null,
+        schedules: validSchedules,
       }
       await createClass(payload)
       setSuccess(true)
       setForm(EMPTY)
+      setSchedules([{ ...EMPTY_SCHEDULE_ROW }])
     } catch (err) {
       setError(err.message)
     } finally {
@@ -126,6 +154,64 @@ export default function NewClass() {
             />
           </div>
 
+        </div>
+
+        {/* Weekly schedule section */}
+        <div className="border-t border-slate-100 pt-4 mt-4">
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
+              Weekly schedule
+            </p>
+            <button
+              type="button"
+              onClick={addScheduleRow}
+              className="text-xs text-blue-600 hover:text-blue-700 font-medium"
+            >
+              + Add day
+            </button>
+          </div>
+
+          <div className="space-y-2">
+            {schedules.map((row, i) => (
+              <div key={i} className="flex items-center gap-2">
+                <select
+                  value={row.day_of_week}
+                  onChange={e => handleScheduleChange(i, "day_of_week", e.target.value)}
+                  className="flex-1 px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                >
+                  {DAYS.map(d => <option key={d} value={d}>{d}</option>)}
+                </select>
+                <input
+                  type="time"
+                  value={row.start_time}
+                  onChange={e => handleScheduleChange(i, "start_time", e.target.value)}
+                  className="px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                />
+                <span className="text-slate-400 text-sm">to</span>
+                <input
+                  type="time"
+                  value={row.end_time}
+                  onChange={e => handleScheduleChange(i, "end_time", e.target.value)}
+                  className="px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                />
+                {schedules.length > 1 && (
+                  <button
+                    type="button"
+                    onClick={() => removeScheduleRow(i)}
+                    className="text-slate-400 hover:text-red-500 flex-shrink-0"
+                    title="Remove this day"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                      <path d="M18 6 6 18M6 6l12 12"/>
+                    </svg>
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+          <p className="text-xs text-slate-400 mt-2">
+            Leave times blank for a day to skip it. A class can meet on multiple days each with its own time.
+          </p>
         </div>
 
         <button
