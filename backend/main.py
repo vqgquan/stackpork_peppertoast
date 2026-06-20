@@ -61,6 +61,7 @@ class Teacher(Base):
     schedule = Column(String, nullable=True)
     customer_source = Column(String, nullable=True)
     sessions = relationship("ClassSession", back_populates="teacher")
+    session_reviews = relationship("SessionReview", back_populates="teacher")
 
 class Student(Base):
     __tablename__ = "students"
@@ -76,6 +77,7 @@ class Student(Base):
     parent_phone = Column(String, nullable=True)
     customer_group = Column(String, nullable=True)
     enrollments = relationship("Enrollment", back_populates="student")
+    session_reviews = relationship("SessionReview", back_populates="student")
 
 class Class(Base):
     __tablename__ = "classes"
@@ -103,6 +105,7 @@ class ClassSession(Base):
     class_ = relationship("Class", back_populates="sessions")
     teacher = relationship("Teacher", back_populates="sessions")
     enrollments = relationship("Enrollment", back_populates="session")
+    session_reviews = relationship("SessionReview", back_populates="session")
 
 class Enrollment(Base):
     """Links a student to one specific ClassSession (not the whole
@@ -119,6 +122,19 @@ class Enrollment(Base):
     discount = Column(String, nullable=True)
     student = relationship("Student", back_populates="enrollments")
     session = relationship("ClassSession", back_populates="enrollments")
+
+class SessionReview(Base):
+    __tablename__ = "session_reviews"
+    id = Column(Integer, primary_key=True, index=True)
+    student_id = Column(Integer, ForeignKey("students.id"), nullable=False)
+    session_id = Column(Integer, ForeignKey("class_sessions.id"), nullable=False)
+    teacher_id = Column(Integer, ForeignKey("teachers.id"), nullable=False)
+    review_date = Column(Date, nullable=False)
+    review_text = Column(String, nullable=True)
+    session_result = Column(String, nullable=True)
+    student = relationship("Student", back_populates="session_reviews")
+    session = relationship("ClassSession", back_populates="session_reviews")
+    teacher = relationship("Teacher", back_populates="session_reviews")
 
 Base.metadata.create_all(bind=engine)
 
@@ -153,6 +169,18 @@ class StudentCreate(BaseModel):
     customer_group: Optional[str] = None
 
 class StudentOut(StudentCreate):
+    id: int
+    class Config: from_attributes = True
+
+class SessionReviewCreate(BaseModel):
+    student_id: int
+    session_id: int
+    teacher_id: int
+    review_date: date
+    review_text: Optional[str] = None
+    session_result: Optional[str] = None
+
+class SessionReviewOut(SessionReviewCreate):
     id: int
     class Config: from_attributes = True
 
@@ -506,3 +534,49 @@ def delete_enrollment(id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Enrollment not found")
     db.delete(e)
     db.commit()
+
+# Session reviews
+@app.get("/students/{student_id}/reviews", response_model=list[SessionReviewOut])
+def get_student_reviews(student_id: int, db: Session = Depends(get_db)):
+    if not db.query(Student).filter(Student.id == student_id).first():
+        raise HTTPException(status_code=404, detail="Student not found")
+    return db.query(SessionReview).filter(SessionReview.student_id == student_id).all()
+
+@app.post("/students/{student_id}/reviews", response_model=SessionReviewOut, status_code=201)
+def create_student_review(student_id: int, payload: SessionReviewCreate, db: Session = Depends(get_db)):
+    if not db.query(Student).filter(Student.id == student_id).first():
+        raise HTTPException(status_code=404, detail="Student not found")
+    if not db.query(ClassSession).filter(ClassSession.id == payload.session_id).first():
+        raise HTTPException(status_code=404, detail="Class session not found")
+    if not db.query(Teacher).filter(Teacher.id == payload.teacher_id).first():
+        raise HTTPException(status_code=404, detail="Teacher not found")
+    review = SessionReview(**payload.model_dump())
+    db.add(review)
+    db.commit()
+    db.refresh(review)
+    return review
+
+@app.delete("/reviews/{id}", status_code=204)
+def delete_review(id: int, db: Session = Depends(get_db)):
+    review = db.query(SessionReview).filter(SessionReview.id == id).first()
+    if not review:
+        raise HTTPException(status_code=404, detail="Review not found")
+    db.delete(review)
+    db.commit()
+
+@app.get("/teachers/{teacher_id}/reviews", response_model=list[SessionReviewOut])
+def get_teacher_reviews(teacher_id: int, db: Session = Depends(get_db)):
+    if not db.query(Teacher).filter(Teacher.id == teacher_id).first():
+        raise HTTPException(status_code=404, detail="Teacher not found")
+    return db.query(SessionReview).filter(SessionReview.teacher_id == teacher_id).all()
+
+@app.get("/reviews/{id}", response_model=SessionReviewOut)
+def get_review(id: int, db: Session = Depends(get_db)):
+    review = db.query(SessionReview).filter(SessionReview.id == id).first()
+    if not review:
+        raise HTTPException(status_code=404, detail="Review not found")
+    return review
+
+@app.get("/reviews", response_model=list[SessionReviewOut])
+def get_all_reviews(db: Session = Depends(get_db)):
+    return db.query(SessionReview).all()
