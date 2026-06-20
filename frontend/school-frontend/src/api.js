@@ -51,3 +51,7 @@ export const createEnrollment = (data) => request("POST", "/enrollments", data);
 export const deleteEnrollment = (id) => request("DELETE", `/enrollments/${id}`);
 export const getEnrollment = (id) => request("GET", `/enrollments/${id}`);
 export const updateEnrollment = (id, data) => request("PUT", `/enrollments/${id}`, data);
+
+export const getStudentReviews = (studentId) => request("GET", `/students/${studentId}/reviews`);
+export const createReview = (studentId, data) => request("POST", `/students/${studentId}/reviews`, data);
+export const deleteReview = (reviewId) => request("DELETE", `/reviews/${reviewId}`);
