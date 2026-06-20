@@ -55,9 +55,10 @@ class Teacher(Base):
     email = Column(String, nullable=True)
     address = Column(String, nullable=True)
     date_of_birth = Column(Date, nullable=True)
+    subjects = Column(String, nullable=True)
+    qualifications = Column(String, nullable=True)
     facebook = Column(String, nullable=True)
-    citizenship = Column(String, nullable=True)
-    passport_number = Column(String, unique=True, nullable=True)
+    schedule = Column(String, nullable=True)
     customer_source = Column(String, nullable=True)
     sessions = relationship("ClassSession", back_populates="teacher")
 
@@ -130,8 +131,9 @@ class TeacherCreate(BaseModel):
     address: Optional[str] = None
     date_of_birth: Optional[date] = None
     facebook: Optional[str] = None
-    citizenship: Optional[str] = None
-    passport_number: Optional[str] = None
+    subjects: Optional[str] = None
+    qualifications: Optional[str] = None
+    schedule: Optional[str] = None
     customer_source: Optional[str] = None
 
 class TeacherOut(TeacherCreate):
@@ -250,6 +252,19 @@ class StudentSessionOut(BaseModel):
 class StudentDetailOut(StudentOut):
     sessions: list[StudentSessionOut] = []
 
+# --- Teacher detail schema ---
+class TeacherSessionOut(BaseModel):
+    session_id: int
+    class_id: int
+    class_name: str
+    subject: Optional[str] = None
+    day_of_week: DayOfWeekEnum
+    start_time: time
+    end_time: time
+
+class TeacherDetailOut(TeacherOut):
+    sessions: list[TeacherSessionOut] = []
+
 # --- App ---
 app = FastAPI(title="School Management API")
 
@@ -271,6 +286,28 @@ def get_teacher(id: int, db: Session = Depends(get_db)):
     if not teacher:
         raise HTTPException(status_code=404, detail="Teacher not found")
     return teacher
+
+@app.get("/teachers/{id}/detail", response_model=TeacherDetailOut)
+def get_teacher_details(id: int, db: Session = Depends(get_db)):
+    teacher = db.query(Teacher).filter(Teacher.id == id).first()
+    if not teacher:
+        raise HTTPException(status_code=404, detail="Teacher not found")
+    
+    sessions = []
+    for s in teacher.sessions: 
+        c = s.class_
+        sessions.append(TeacherSessionOut(
+            session_id=s.id,
+            class_id=c.id,
+            class_name=c.name,
+            subject=c.subject,
+            day_of_week=s.day_of_week,
+            start_time=s.start_time,
+            end_time=s.end_time
+        ))
+    result = TeacherDetailOut.model_validate(teacher)
+    result.sessions = sessions
+    return result
 
 @app.post("/teachers", response_model=TeacherOut, status_code=201)
 def create_teacher(teacher: TeacherCreate, db: Session = Depends(get_db)):
