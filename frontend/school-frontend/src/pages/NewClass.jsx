@@ -1,40 +1,46 @@
-import { useState } from "react"
-import { createClass } from "../api"
+import { useState, useEffect } from "react"
+import { createClass, getTeachers } from "../api"
 
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+const SUBJECTS = ["Guitar", "Guitar điện", "Piano", "Organ", "Trống", "Thanh nhạc"]
 
 const EMPTY = {
   name: "",
   description: "",
-  teacher_id: "",
+  subject: "",
   start_date: "",
   end_date: "",
   status: "Active",
 }
 
-const EMPTY_SCHEDULE_ROW = { day_of_week: "Monday", start_time: "", end_time: "" }
+const EMPTY_SESSION_ROW = { day_of_week: "Monday", start_time: "", end_time: "", teacher_id: "" }
 
 export default function NewClass() {
   const [form, setForm] = useState(EMPTY)
-  const [schedules, setSchedules] = useState([{ ...EMPTY_SCHEDULE_ROW }])
+  const [sessions, setSessions] = useState([{ ...EMPTY_SESSION_ROW }])
+  const [teachers, setTeachers] = useState([])
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState(null)
   const [success, setSuccess] = useState(false)
+
+  useEffect(() => {
+    getTeachers().then(setTeachers).catch(() => {})
+  }, [])
 
   function handleChange(e) {
     setForm(prev => ({ ...prev, [e.target.name]: e.target.value }))
   }
 
-  function handleScheduleChange(index, field, value) {
-    setSchedules(prev => prev.map((row, i) => i === index ? { ...row, [field]: value } : row))
+  function handleSessionChange(index, field, value) {
+    setSessions(prev => prev.map((row, i) => i === index ? { ...row, [field]: value } : row))
   }
 
-  function addScheduleRow() {
-    setSchedules(prev => [...prev, { ...EMPTY_SCHEDULE_ROW }])
+  function addSessionRow() {
+    setSessions(prev => [...prev, { ...EMPTY_SESSION_ROW }])
   }
 
-  function removeScheduleRow(index) {
-    setSchedules(prev => prev.filter((_, i) => i !== index))
+  function removeSessionRow(index) {
+    setSessions(prev => prev.filter((_, i) => i !== index))
   }
 
   async function handleSubmit(e) {
@@ -43,27 +49,27 @@ export default function NewClass() {
     setError(null)
     setSuccess(false)
     try {
-      // Only keep schedule rows where both times are filled in
-      const validSchedules = schedules
+      const validSessions = sessions
         .filter(row => row.start_time && row.end_time)
         .map(row => ({
           day_of_week: row.day_of_week,
           start_time: row.start_time,
           end_time: row.end_time,
+          teacher_id: row.teacher_id !== "" ? Number(row.teacher_id) : null,
         }))
 
       const payload = {
         ...form,
-        teacher_id: form.teacher_id !== "" ? Number(form.teacher_id) : null,
+        subject: form.subject || null,
         start_date: form.start_date || null,
         end_date: form.end_date || null,
         description: form.description || null,
-        schedules: validSchedules,
+        sessions: validSessions,
       }
       await createClass(payload)
       setSuccess(true)
       setForm(EMPTY)
-      setSchedules([{ ...EMPTY_SCHEDULE_ROW }])
+      setSessions([{ ...EMPTY_SESSION_ROW }])
     } catch (err) {
       setError(err.message)
     } finally {
@@ -101,24 +107,16 @@ export default function NewClass() {
             />
           </div>
 
-          <div className="col-span-2">
-            <label className="block text-xs font-medium text-slate-600 mb-1">Description</label>
-            <textarea
-              name="description" value={form.description}
-              onChange={handleChange} rows={3}
-              className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white resize-none"
-            />
-          </div>
-
           <div>
-            <label className="block text-xs font-medium text-slate-600 mb-1">Teacher ID</label>
-            <input
-              name="teacher_id" type="number" value={form.teacher_id}
-              onChange={handleChange} min="1"
-              placeholder="Leave blank if unassigned"
+            <label className="block text-xs font-medium text-slate-600 mb-1">Subject</label>
+            <select
+              name="subject" value={form.subject}
+              onChange={handleChange}
               className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
-            />
-            <p className="text-xs text-slate-400 mt-1">Enter the ID from the Teachers list</p>
+            >
+              <option value="">— Select —</option>
+              {SUBJECTS.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
           </div>
 
           <div>
@@ -134,6 +132,15 @@ export default function NewClass() {
               <option value="Completed">Completed</option>
               <option value="Cancelled">Cancelled</option>
             </select>
+          </div>
+
+          <div className="col-span-2">
+            <label className="block text-xs font-medium text-slate-600 mb-1">Description</label>
+            <textarea
+              name="description" value={form.description}
+              onChange={handleChange} rows={3}
+              className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white resize-none"
+            />
           </div>
 
           <div>
@@ -156,50 +163,63 @@ export default function NewClass() {
 
         </div>
 
-        {/* Weekly schedule section */}
+        {/* Sessions section */}
         <div className="border-t border-slate-100 pt-4 mt-4">
-          <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center justify-between mb-1">
             <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
-              Weekly schedule
+              Sessions
             </p>
             <button
               type="button"
-              onClick={addScheduleRow}
+              onClick={addSessionRow}
               className="text-xs text-blue-600 hover:text-blue-700 font-medium"
             >
-              + Add day
+              + Add session
             </button>
           </div>
+          <p className="text-xs text-slate-400 mb-3">
+            A class can have multiple sessions (e.g. Monday 9–11am and Monday 11am–1pm), each with its own teacher and its own independent roster of students.
+          </p>
 
           <div className="space-y-2">
-            {schedules.map((row, i) => (
-              <div key={i} className="flex items-center gap-2">
+            {sessions.map((row, i) => (
+              <div key={i} className="flex items-center gap-2 flex-wrap">
                 <select
                   value={row.day_of_week}
-                  onChange={e => handleScheduleChange(i, "day_of_week", e.target.value)}
-                  className="flex-1 px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                  onChange={e => handleSessionChange(i, "day_of_week", e.target.value)}
+                  className="px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
                 >
                   {DAYS.map(d => <option key={d} value={d}>{d}</option>)}
                 </select>
                 <input
                   type="time"
                   value={row.start_time}
-                  onChange={e => handleScheduleChange(i, "start_time", e.target.value)}
+                  onChange={e => handleSessionChange(i, "start_time", e.target.value)}
                   className="px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
                 />
                 <span className="text-slate-400 text-sm">to</span>
                 <input
                   type="time"
                   value={row.end_time}
-                  onChange={e => handleScheduleChange(i, "end_time", e.target.value)}
+                  onChange={e => handleSessionChange(i, "end_time", e.target.value)}
                   className="px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
                 />
-                {schedules.length > 1 && (
+                <select
+                  value={row.teacher_id}
+                  onChange={e => handleSessionChange(i, "teacher_id", e.target.value)}
+                  className="flex-1 min-w-[140px] px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                >
+                  <option value="">— No teacher assigned —</option>
+                  {teachers.map(t => (
+                    <option key={t.id} value={t.id}>{t.name}</option>
+                  ))}
+                </select>
+                {sessions.length > 1 && (
                   <button
                     type="button"
-                    onClick={() => removeScheduleRow(i)}
+                    onClick={() => removeSessionRow(i)}
                     className="text-slate-400 hover:text-red-500 flex-shrink-0"
-                    title="Remove this day"
+                    title="Remove this session"
                   >
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                       <path d="M18 6 6 18M6 6l12 12"/>
@@ -210,7 +230,7 @@ export default function NewClass() {
             ))}
           </div>
           <p className="text-xs text-slate-400 mt-2">
-            Leave times blank for a day to skip it. A class can meet on multiple days each with its own time.
+            Leave times blank for a row to skip it.
           </p>
         </div>
 

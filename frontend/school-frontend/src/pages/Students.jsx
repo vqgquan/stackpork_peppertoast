@@ -66,9 +66,9 @@ export default function Students() {
                 <th className="px-4 py-3">Phone</th>
                 <th className="px-4 py-3">Gender</th>
                 <th className="px-4 py-3">Email</th>
-                <th className="px-4 py-3">Date of Birth</th>
-                <th className="px-4 py-3">Citizenship</th>
-                <th className="px-4 py-3">Passport</th>
+                <th className="px-4 py-3">Parent</th>
+                <th className="px-4 py-3">Parent Phone</th>
+                <th className="px-4 py-3">Customer Group</th>
                 <th className="px-4 py-3">Source</th>
                 <th className="px-4 py-3"></th>
               </tr>
@@ -89,10 +89,14 @@ export default function Students() {
                       {s.gender}
                     </span>
                   </td>
-                  <td className="px-4 py-3 text-slate-600">{s.email ?? "—"}</td>
-                  <td className="px-4 py-3 text-slate-600">{s.date_of_birth ?? "—"}</td>
-                  <td className="px-4 py-3 text-slate-600">{s.citizenship ?? "—"}</td>
-                  <td className="px-4 py-3 text-slate-600">{s.passport_number ?? "—"}</td>
+                  <td className="px-4 py-3 text-slate-600">{s.email}</td>
+                  <td className="px-4 py-3 text-slate-600">{s.parent_name ?? "—"}</td>
+                  <td className="px-4 py-3 text-slate-600">{s.parent_phone ?? "—"}</td>
+                  <td className="px-4 py-3">
+                    {s.customer_group
+                      ? <span className="inline-block text-xs px-2 py-0.5 rounded-full bg-amber-50 text-amber-700">{s.customer_group}</span>
+                      : "—"}
+                  </td>
                   <td className="px-4 py-3">
                     {s.customer_source
                       ? <span className="inline-block text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">{s.customer_source}</span>
