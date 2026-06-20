@@ -54,6 +54,7 @@ class Teacher(Base):
     gender = Column(String, nullable=False)
     email = Column(String, nullable=True)
     address = Column(String, nullable=True)
+    date_of_birth = Column(Date, nullable=True)
     subjects = Column(String, nullable=True)
     qualifications = Column(String, nullable=True)
     facebook = Column(String, nullable=True)
@@ -286,7 +287,7 @@ def get_teacher(id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Teacher not found")
     return teacher
 
-@app.get("/teachers/{id}/details", response_model=TeacherDetailOut)
+@app.get("/teachers/{id}/detail", response_model=TeacherDetailOut)
 def get_teacher_details(id: int, db: Session = Depends(get_db)):
     teacher = db.query(Teacher).filter(Teacher.id == id).first()
     if not teacher:

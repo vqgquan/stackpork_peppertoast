@@ -6,6 +6,7 @@ import NewClass from "./pages/NewClass";
 import Students from "./pages/Students";
 import NewStudent from "./pages/NewStudent";
 import StudentDetail from "./pages/StudentDetail";
+import TeacherDetail from './pages/TeacherDetail'
 
 export default function App() {
   const location = useLocation();
@@ -46,6 +47,7 @@ export default function App() {
           <Route path="/students" element={<Students />} />
           <Route path="/students/new" element={<NewStudent />} />
           <Route path="/students/:id" element={<StudentDetail />} />
+          <Route path="/teachers/:id" element={<TeacherDetail />} />
         </Routes>
       </main>
     </div>

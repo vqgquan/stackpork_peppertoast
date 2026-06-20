@@ -31,6 +31,7 @@ export const getTeacher = (id) => request("GET", `/teachers/${id}`);
 export const createTeacher = (data) => request("POST", "/teachers", data);
 export const updateTeacher = (id, data) => request("PUT", `/teachers/${id}`, data);
 export const deleteTeacher = (id) => request("DELETE", `/teachers/${id}`);
+export const getTeacherDetail = (id) => request("GET", `/teachers/${id}/detail`);
 
 export const getStudents = () => request("GET", "/students");
 export const getStudent = (id) => request("GET", `/students/${id}`);
