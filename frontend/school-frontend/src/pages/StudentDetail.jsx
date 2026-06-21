@@ -6,7 +6,7 @@ import {
   createEnrollment,
   deleteEnrollment,
   getStudentReviews,
-  createReview,
+  createStudentReview,
   deleteReview,
 } from "../api";
 
@@ -19,7 +19,7 @@ const DAYS = [
   "Saturday",
   "Sunday",
 ];
-const HOUR_HEIGHT = 48;
+const HOUR_HEIGHT = 44;
 const TOTAL_HOURS = 24;
 const GUTTER_WIDTH = 52;
 const PAYMENT_METHODS = ["Tiền Mặt", "Chuyển khoản", "Pos"];
@@ -42,6 +42,21 @@ function hourLabel(h) {
   const period = h >= 12 ? "pm" : "am";
   const h12 = h % 12 === 0 ? 12 : h % 12;
   return `${h12}${period}`;
+}
+
+// Most recent calendar date (YYYY-MM-DD) on/before today that falls on
+// the given day-of-week. Sessions only store a recurring day-of-week,
+// not a specific date, so this is used to auto-fill "Date" once a
+// session is picked.
+function mostRecentDateFor(dayOfWeek) {
+  const targetIdx = DAYS.indexOf(dayOfWeek); // Monday = 0 ... Sunday = 6
+  const today = new Date();
+  const todayIdx = (today.getDay() + 6) % 7; // JS Sun=0 -> Monday=0
+  let diff = todayIdx - targetIdx;
+  if (diff < 0) diff += 7;
+  const result = new Date(today);
+  result.setDate(today.getDate() - diff);
+  return result.toISOString().slice(0, 10);
 }
 
 function enrollmentSummary(s) {
@@ -127,16 +142,9 @@ function WeeklyTimetable({ sessions }) {
 
   return (
     <div className="border border-slate-200 rounded-xl overflow-hidden">
-      <div
-        ref={scrollRef}
-        className="overflow-y-auto"
-        style={{ maxHeight: 560 }}
-      >
+      <div ref={scrollRef} className="overflow-y-auto" style={{ maxHeight: 560 }}>
         <div className="flex sticky top-0 z-20 bg-white border-b border-slate-200">
-          <div
-            style={{ width: GUTTER_WIDTH }}
-            className="flex-shrink-0 bg-white"
-          />
+          <div style={{ width: GUTTER_WIDTH }} className="flex-shrink-0 bg-white" />
           {DAYS.map((day) => (
             <div
               key={day}
@@ -148,10 +156,7 @@ function WeeklyTimetable({ sessions }) {
         </div>
 
         <div className="flex">
-          <div
-            style={{ width: GUTTER_WIDTH, height: totalHeight }}
-            className="relative flex-shrink-0"
-          >
+          <div style={{ width: GUTTER_WIDTH, height: totalHeight }} className="relative flex-shrink-0">
             {Array.from({ length: TOTAL_HOURS }).map((_, h) => (
               <div
                 key={h}
@@ -164,23 +169,14 @@ function WeeklyTimetable({ sessions }) {
           </div>
 
           <div className="relative flex-1" style={{ height: totalHeight }}>
-            <div
-              className="absolute inset-0 pointer-events-none"
-              style={{ backgroundImage: hourLineGradient }}
-            />
+            <div className="absolute inset-0 pointer-events-none" style={{ backgroundImage: hourLineGradient }} />
 
             <div className="absolute inset-0 grid grid-cols-7">
               {DAYS.map((day) => (
-                <div
-                  key={day}
-                  className="relative border-l border-slate-100 first:border-l-0"
-                >
+                <div key={day} className="relative border-l border-slate-100 first:border-l-0">
                   {layoutDayEvents(eventsByDay[day]).map((e) => {
                     const top = (e.startMin / 60) * HOUR_HEIGHT;
-                    const height = Math.max(
-                      ((e.endMin - e.startMin) / 60) * HOUR_HEIGHT,
-                      22,
-                    );
+                    const height = Math.max(((e.endMin - e.startMin) / 60) * HOUR_HEIGHT, 22);
                     const widthPct = 100 / e.trackCount;
                     const leftPct = e.track * widthPct;
                     return (
@@ -220,7 +216,7 @@ function WeeklyTimetable({ sessions }) {
 }
 
 const inputClass =
-  "w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white";
+  "w-full px-2 py-1.5 text-sm border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white";
 const labelClass = "block text-xs font-medium text-slate-600 mb-1";
 
 function makeEmptyEnrollDraft() {
@@ -235,6 +231,24 @@ function makeEmptyEnrollDraft() {
   };
 }
 
+function makeEmptyReviewDraft() {
+  return {
+    subject: "",
+    class_id: "",
+    session_id: "",
+    review_date: "",
+    session_content: "",
+    review_text: "",
+    session_result: "",
+  };
+}
+
+function resultBadgeClass(result) {
+  if (result === "Pass") return "bg-green-50 text-green-700";
+  if (result === "Fail") return "bg-red-50 text-red-600";
+  return "bg-slate-100 text-slate-600";
+}
+
 export default function StudentDetail() {
   const { id } = useParams();
   const [student, setStudent] = useState(null);
@@ -247,13 +261,7 @@ export default function StudentDetail() {
   const [enrollError, setEnrollError] = useState(null);
 
   const [reviews, setReviews] = useState([]);
-  const [reviewDraft, setReviewDraft] = useState({
-    session_id: "",
-    teacher_id: "",
-    review_date: new Date().toISOString().slice(0, 10),
-    review_text: "",
-    session_result: "",
-  });
+  const [reviewDraft, setReviewDraft] = useState(makeEmptyReviewDraft());
   const [reviewError, setReviewError] = useState(null);
   const [submittingReview, setSubmittingReview] = useState(false);
 
@@ -284,7 +292,7 @@ export default function StudentDetail() {
   );
 
   // Unique list of subjects across all active classes (classes with no
-  // subject set are grouped under "Other").
+  // subject set are grouped under "Other"). Used by the enroll form.
   const subjects = useMemo(() => {
     const set = new Set(
       activeClasses.map((c) => c.subject || NO_SUBJECT_LABEL),
@@ -303,6 +311,47 @@ export default function StudentDetail() {
     if (!cls) return [];
     return cls.sessions.filter((s) => !enrolledSessionIds.has(s.id));
   }
+
+  // --- Review form data, scoped to sessions this student is actually
+  // enrolled in (not all active classes) ---
+  const reviewSubjects = useMemo(() => {
+    if (!student) return [];
+    const set = new Set(
+      student.sessions.map((s) => s.subject || NO_SUBJECT_LABEL),
+    );
+    return Array.from(set).sort();
+  }, [student]);
+
+  function reviewClassesForSubject(subject) {
+    if (!student) return [];
+    const seen = new Map();
+    student.sessions
+      .filter((s) => (s.subject || NO_SUBJECT_LABEL) === subject)
+      .forEach((s) => seen.set(s.class_id, s.class_name));
+    return Array.from(seen, ([class_id, class_name]) => ({ class_id, class_name }));
+  }
+
+  function reviewSessionsForClass(classId) {
+    if (!student) return [];
+    return student.sessions.filter((s) => String(s.class_id) === String(classId));
+  }
+
+  const selectedReviewSession = useMemo(() => {
+    if (!student) return null;
+    return (
+      student.sessions.find(
+        (s) => String(s.session_id) === String(reviewDraft.session_id),
+      ) ?? null
+    );
+  }, [student, reviewDraft.session_id]);
+
+  const sessionLookup = useMemo(() => {
+    const map = new Map();
+    if (student) {
+      student.sessions.forEach((s) => map.set(String(s.session_id), s));
+    }
+    return map;
+  }, [student]);
 
   function updateDraft(field, value) {
     setDraft((prev) => {
@@ -379,27 +428,43 @@ export default function StudentDetail() {
     }
   }
 
+  // --- Review form handlers ---
+  function updateReviewDraft(field, value) {
+    setReviewDraft((prev) => {
+      const updated = { ...prev, [field]: value };
+      if (field === "subject") {
+        updated.class_id = "";
+        updated.session_id = "";
+        updated.review_date = "";
+      } else if (field === "class_id") {
+        updated.session_id = "";
+        updated.review_date = "";
+      } else if (field === "session_id") {
+        const session = student.sessions.find(
+          (s) => String(s.session_id) === String(value),
+        );
+        updated.review_date = session ? mostRecentDateFor(session.day_of_week) : "";
+      }
+      return updated;
+    });
+  }
+
   async function handleAddReview(e) {
     e.preventDefault();
-    if (!reviewDraft.session_id || !reviewDraft.teacher_id) return;
+    if (!selectedReviewSession || !reviewDraft.review_date) return;
     setSubmittingReview(true);
     setReviewError(null);
     try {
-      await createReview(id, {
+      await createStudentReview(id, {
         student_id: Number(id),
         session_id: Number(reviewDraft.session_id),
-        teacher_id: Number(reviewDraft.teacher_id),
+        teacher_id: selectedReviewSession.teacher_id,
         review_date: reviewDraft.review_date,
+        session_content: reviewDraft.session_content || null,
         review_text: reviewDraft.review_text || null,
         session_result: reviewDraft.session_result || null,
       });
-      setReviewDraft({
-        session_id: "",
-        teacher_id: "",
-        review_date: new Date().toISOString().slice(0, 10),
-        review_text: "",
-        session_result: "",
-      });
+      setReviewDraft(makeEmptyReviewDraft());
       await getStudentReviews(id).then(setReviews);
     } catch (err) {
       setReviewError(err.message);
@@ -425,12 +490,16 @@ export default function StudentDetail() {
   const classOptions = draft.subject ? classesForSubject(draft.subject) : [];
   const sessionOptions = draft.class_id ? sessionsForClass(draft.class_id) : [];
 
+  const reviewClassOptions = reviewDraft.subject
+    ? reviewClassesForSubject(reviewDraft.subject)
+    : [];
+  const reviewSessionOptions = reviewDraft.class_id
+    ? reviewSessionsForClass(reviewDraft.class_id)
+    : [];
+
   return (
-    <div className="p-8 max-w-6xl">
-      <Link
-        to="/students"
-        className="text-sm text-blue-600 hover:underline mb-4 inline-block"
-      >
+    <div className="p-8 w-full">
+      <Link to="/students" className="text-sm text-blue-600 hover:underline mb-4 inline-block">
         ← Back to Students
       </Link>
 
@@ -438,9 +507,7 @@ export default function StudentDetail() {
       <div className="bg-white border border-slate-200 rounded-xl p-6 mb-6">
         <div className="flex items-start justify-between">
           <div>
-            <h1 className="text-2xl font-semibold text-slate-900">
-              {student.name}
-            </h1>
+            <h1 className="text-2xl font-semibold text-slate-900">{student.name}</h1>
             {student.gender && (
               <span
                 className={`inline-block mt-1 text-xs px-2 py-0.5 rounded-full font-medium ${
@@ -469,11 +536,7 @@ export default function StudentDetail() {
           <Info label="Phone" value={student.phone} />
           <Info label="Email" value={student.email} />
           <Info label="Date of Birth" value={student.date_of_birth} />
-          <Info
-            label="Address"
-            value={student.address}
-            className="col-span-2"
-          />
+          <Info label="Address" value={student.address} className="col-span-2" />
         </div>
 
         {(student.parent_name || student.parent_phone) && (
@@ -489,409 +552,288 @@ export default function StudentDetail() {
         )}
       </div>
 
-      {/* Weekly timetable */}
-      <div className="bg-white border border-slate-200 rounded-xl p-6">
-        <h2 className="text-lg font-semibold text-slate-900 mb-4">
-          Weekly Schedule
-        </h2>
+      {/* Schedule + enrolled sessions / enroll form, side by side to use full width */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+        <div className="lg:col-span-2 bg-white border border-slate-200 rounded-xl p-6">
+          <h2 className="text-lg font-semibold text-slate-900 mb-4">Weekly Schedule</h2>
+          {student.sessions.length === 0 ? (
+            <p className="text-sm text-slate-400">This student has no scheduled sessions yet.</p>
+          ) : (
+            <WeeklyTimetable sessions={student.sessions} />
+          )}
+        </div>
 
-        {student.sessions.length === 0 ? (
-          <p className="text-sm text-slate-400">
-            This student has no scheduled sessions yet.
-          </p>
-        ) : (
-          <WeeklyTimetable sessions={student.sessions} />
-        )}
-      </div>
+        <div className="bg-white border border-slate-200 rounded-xl p-6">
+          <h2 className="text-lg font-semibold text-slate-900 mb-4">Enrolled Sessions</h2>
 
-      {/* Enrolled sessions + enroll form */}
-      <div className="bg-white border border-slate-200 rounded-xl p-6 mt-6">
-        <h2 className="text-lg font-semibold text-slate-900 mb-4">
-          Enrolled Sessions
-        </h2>
-
-        {student.sessions.length === 0 ? (
-          <p className="text-sm text-slate-400 mb-5">
-            Not enrolled in any class sessions yet.
-          </p>
-        ) : (
-          <div className="space-y-2 mb-5">
-            {student.sessions.map((s) => (
-              <div
-                key={s.enrollment_id}
-                className="flex items-center justify-between border border-slate-100 rounded-lg px-3 py-2"
-              >
-                <div className="min-w-0">
-                  <div className="flex items-center gap-1.5 flex-wrap">
-                    <p className="text-sm font-medium text-slate-800 truncate">
-                      {s.class_name}
-                    </p>
-                    {s.subject && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-50 text-purple-700 flex-shrink-0">
-                        {s.subject}
-                      </span>
-                    )}
-                  </div>
-                  <p className="text-xs text-slate-400 truncate">
-                    {s.day_of_week.slice(0, 3)} {formatTime(s.start_time)}–
-                    {formatTime(s.end_time)}
-                    {s.teacher_name && ` · ${s.teacher_name}`}
-                  </p>
-                  {enrollmentSummary(s) && (
+          {student.sessions.length === 0 ? (
+            <p className="text-sm text-slate-400 mb-4">Not enrolled in any class sessions yet.</p>
+          ) : (
+            <div className="space-y-2 mb-4 max-h-[400px] overflow-y-auto pr-1">
+              {student.sessions.map((s) => (
+                <div
+                  key={s.enrollment_id}
+                  className="flex items-center justify-between border border-slate-100 rounded-lg px-3 py-2"
+                >
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <p className="text-sm font-medium text-slate-800 truncate">{s.class_name}</p>
+                      {s.subject && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-50 text-purple-700 flex-shrink-0">
+                          {s.subject}
+                        </span>
+                      )}
+                    </div>
                     <p className="text-xs text-slate-400 truncate">
-                      {enrollmentSummary(s)}
+                      {s.day_of_week.slice(0, 3)} {formatTime(s.start_time)}–{formatTime(s.end_time)}
+                      {s.teacher_name && ` · ${s.teacher_name}`}
                     </p>
-                  )}
-                </div>
-                <button
-                  onClick={() => handleUnenroll(s.enrollment_id, s.class_name)}
-                  className="text-xs text-red-400 hover:text-red-600 font-medium flex-shrink-0 ml-3"
-                >
-                  Remove
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-
-        <form
-          onSubmit={handleEnroll}
-          className="border-t border-slate-100 pt-4"
-        >
-          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">
-            Enroll in a class
-          </p>
-
-          <div className="grid grid-cols-2 gap-3 mb-3">
-            <div>
-              <label className={labelClass}>Subject</label>
-              <select
-                value={draft.subject}
-                onChange={(e) => updateDraft("subject", e.target.value)}
-                className={inputClass}
-              >
-                <option value="">— Select —</option>
-                {subjects.map((s) => (
-                  <option key={s} value={s}>
-                    {s}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className={labelClass}>Class</label>
-              <select
-                value={draft.class_id}
-                onChange={(e) => updateDraft("class_id", e.target.value)}
-                disabled={!draft.subject}
-                className={inputClass}
-              >
-                <option value="">— Select —</option>
-                {classOptions.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          <div className="mb-3">
-            <label className={labelClass}>
-              Sessions{" "}
-              {draft.class_id && (
-                <span className="text-slate-400 font-normal">
-                  (select one or more)
-                </span>
-              )}
-            </label>
-
-            {!draft.class_id ? (
-              <p className="text-xs text-slate-400 italic px-1">
-                Choose a class first.
-              </p>
-            ) : sessionOptions.length === 0 ? (
-              <p className="text-xs text-slate-400 italic px-1">
-                No available sessions — the student may already be enrolled in
-                all of them.
-              </p>
-            ) : (
-              <div className="space-y-1.5">
-                {sessionOptions.map((s) => {
-                  const checked = draft.session_ids
-                    .map(String)
-                    .includes(String(s.id));
-                  return (
-                    <label
-                      key={s.id}
-                      className={`flex items-center gap-2 px-3 py-2 text-sm border rounded-lg cursor-pointer transition-colors ${
-                        checked
-                          ? "border-blue-400 bg-blue-50"
-                          : "border-slate-200 bg-white hover:bg-slate-50"
-                      }`}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={() => toggleSession(s.id)}
-                        className="accent-blue-600"
-                      />
-                      <span className="flex-1">
-                        {s.day_of_week.slice(0, 3)} {formatTime(s.start_time)}–
-                        {formatTime(s.end_time)}
-                      </span>
-                      <span className="text-xs text-slate-500">
-                        {s.teacher_name || "Unassigned"}
-                      </span>
-                    </label>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-
-          <div className="grid grid-cols-2 gap-3 mb-3">
-            <div>
-              <label className={labelClass}>Total Sessions</label>
-              <input
-                type="number"
-                min="1"
-                value={draft.total_sessions}
-                onChange={(e) => updateDraft("total_sessions", e.target.value)}
-                placeholder="e.g. 16"
-                className={inputClass}
-              />
-            </div>
-            <div>
-              <label className={labelClass}>Price</label>
-              <input
-                type="number"
-                min="0"
-                value={draft.price}
-                onChange={(e) => updateDraft("price", e.target.value)}
-                placeholder="VNĐ"
-                className={inputClass}
-              />
-            </div>
-            <div>
-              <label className={labelClass}>Payment Method</label>
-              <select
-                value={draft.payment_method}
-                onChange={(e) => updateDraft("payment_method", e.target.value)}
-                className={inputClass}
-              >
-                <option value="">— Select —</option>
-                {PAYMENT_METHODS.map((m) => (
-                  <option key={m} value={m}>
-                    {m}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className={labelClass}>Discount</label>
-              <input
-                type="text"
-                value={draft.discount}
-                onChange={(e) => updateDraft("discount", e.target.value)}
-                placeholder="e.g. 10% or 200,000đ"
-                className={inputClass}
-              />
-            </div>
-          </div>
-
-          {draft.session_ids.length > 1 && (
-            <p className="text-xs text-slate-400 mb-3 italic">
-              Price, payment method, and discount above will apply to all{" "}
-              {draft.session_ids.length} selected sessions.
-            </p>
-          )}
-
-          <button
-            type="submit"
-            disabled={draft.session_ids.length === 0 || enrolling}
-            className="w-full py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-colors"
-          >
-            {enrolling
-              ? "Enrolling..."
-              : draft.session_ids.length > 1
-                ? `Enroll in ${draft.session_ids.length} sessions`
-                : "Enroll"}
-          </button>
-        </form>
-        {enrollError && (
-          <p className="text-sm text-red-600 mt-2">{enrollError}</p>
-        )}
-      </div>
-
-      {/* Reviews */}
-      <div className="bg-white border border-slate-200 rounded-xl p-6 mt-6">
-        <h2 className="text-lg font-semibold text-slate-900 mb-4">
-          Session Reviews
-        </h2>
-
-        {/* Existing reviews */}
-        {reviews.length === 0 ? (
-          <p className="text-sm text-slate-400 mb-5">No reviews yet.</p>
-        ) : (
-          <div className="space-y-2 mb-5">
-            {reviews.map((r) => (
-              <div
-                key={r.id}
-                className="flex items-start justify-between border border-slate-100 rounded-lg px-3 py-2"
-              >
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <p className="text-xs text-slate-400">{r.review_date}</p>
-                    {r.session_result && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-green-50 text-green-700 font-medium">
-                        {r.session_result}
-                      </span>
+                    {enrollmentSummary(s) && (
+                      <p className="text-xs text-slate-400 truncate">{enrollmentSummary(s)}</p>
                     )}
                   </div>
-                  {r.review_text && (
-                    <p className="text-sm text-slate-700 mt-1">
-                      {r.review_text}
-                    </p>
-                  )}
-                  <p className="text-xs text-slate-400 mt-0.5">
-                    Session #{r.session_id} · Teacher #{r.teacher_id}
-                  </p>
+                  <button
+                    onClick={() => handleUnenroll(s.enrollment_id, s.class_name)}
+                    className="text-xs text-red-400 hover:text-red-600 font-medium flex-shrink-0 ml-3"
+                  >
+                    Remove
+                  </button>
                 </div>
-                <button
-                  onClick={() => handleDeleteReview(r.id)}
-                  className="text-xs text-red-400 hover:text-red-600 font-medium flex-shrink-0 ml-3"
-                >
-                  Delete
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* Add review form */}
-        <form
-          onSubmit={handleAddReview}
-          className="border-t border-slate-100 pt-4"
-        >
-          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">
-            Add a review
-          </p>
-
-          <div className="grid grid-cols-2 gap-3 mb-3">
-            {/* Session picker — only shows sessions this student is enrolled in */}
-            <div>
-              <label className={labelClass}>Session *</label>
-              <select
-                value={reviewDraft.session_id}
-                onChange={(e) => {
-                  const sessionId = e.target.value;
-                  // auto-fill teacher from the selected session
-                  const session = student.sessions.find(
-                    (s) => String(s.session_id) === sessionId,
-                  );
-                  setReviewDraft((prev) => ({
-                    ...prev,
-                    session_id: sessionId,
-                    teacher_id: session?.teacher_id
-                      ? String(session.teacher_id)
-                      : "",
-                  }));
-                }}
-                className={inputClass}
-                required
-              >
-                <option value="">— Select —</option>
-                {student.sessions.map((s) => (
-                  <option key={s.session_id} value={s.session_id}>
-                    {s.class_name} · {s.day_of_week.slice(0, 3)}{" "}
-                    {formatTime(s.start_time)}
-                  </option>
-                ))}
-              </select>
+              ))}
             </div>
-
-            <div>
-              <label className={labelClass}>Teacher ID *</label>
-              <input
-                type="number"
-                value={reviewDraft.teacher_id}
-                onChange={(e) =>
-                  setReviewDraft((prev) => ({
-                    ...prev,
-                    teacher_id: e.target.value,
-                  }))
-                }
-                className={inputClass}
-                required
-              />
-            </div>
-
-            <div>
-              <label className={labelClass}>Date *</label>
-              <input
-                type="date"
-                value={reviewDraft.review_date}
-                onChange={(e) =>
-                  setReviewDraft((prev) => ({
-                    ...prev,
-                    review_date: e.target.value,
-                  }))
-                }
-                className={inputClass}
-                required
-              />
-            </div>
-
-            <div>
-              <label className={labelClass}>Result</label>
-              <input
-                type="text"
-                placeholder="e.g. Pass, Needs work"
-                value={reviewDraft.session_result}
-                onChange={(e) =>
-                  setReviewDraft((prev) => ({
-                    ...prev,
-                    session_result: e.target.value,
-                  }))
-                }
-                className={inputClass}
-              />
-            </div>
-          </div>
-
-          <div className="mb-3">
-            <label className={labelClass}>Notes</label>
-            <textarea
-              rows={3}
-              placeholder="Write notes about this session..."
-              value={reviewDraft.review_text}
-              onChange={(e) =>
-                setReviewDraft((prev) => ({
-                  ...prev,
-                  review_text: e.target.value,
-                }))
-              }
-              className={inputClass}
-            />
-          </div>
-
-          {reviewError && (
-            <p className="text-sm text-red-600 mb-2">{reviewError}</p>
           )}
 
-          <button
-            type="submit"
-            disabled={
-              !reviewDraft.session_id ||
-              !reviewDraft.teacher_id ||
-              submittingReview
-            }
-            className="w-full py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-colors"
-          >
-            {submittingReview ? "Saving..." : "Add review"}
-          </button>
-        </form>
+          <form onSubmit={handleEnroll} className="border-t border-slate-100 pt-4">
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">
+              Enroll in a class
+            </p>
+
+            <div className="grid grid-cols-2 gap-2 mb-3">
+              <div>
+                <label className={labelClass}>Subject</label>
+                <select
+                  value={draft.subject}
+                  onChange={(e) => updateDraft("subject", e.target.value)}
+                  className={inputClass}
+                >
+                  <option value="">— Select —</option>
+                  {subjects.map((s) => (
+                    <option key={s} value={s}>
+                      {s}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className={labelClass}>Class</label>
+                <select
+                  value={draft.class_id}
+                  onChange={(e) => updateDraft("class_id", e.target.value)}
+                  disabled={!draft.subject}
+                  className={inputClass}
+                >
+                  <option value="">— Select —</option>
+                  {classOptions.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="mb-3">
+              <label className={labelClass}>
+                Sessions{" "}
+                {draft.class_id && (
+                  <span className="text-slate-400 font-normal">(select one or more)</span>
+                )}
+              </label>
+
+              {!draft.class_id ? (
+                <p className="text-xs text-slate-400 italic px-1">Choose a class first.</p>
+              ) : sessionOptions.length === 0 ? (
+                <p className="text-xs text-slate-400 italic px-1">
+                  No available sessions — the student may already be enrolled in all of them.
+                </p>
+              ) : (
+                <div className="space-y-1.5 max-h-[180px] overflow-y-auto pr-1">
+                  {sessionOptions.map((s) => {
+                    const checked = draft.session_ids.map(String).includes(String(s.id));
+                    return (
+                      <label
+                        key={s.id}
+                        className={`flex items-center gap-2 px-2.5 py-1.5 text-xs border rounded-lg cursor-pointer transition-colors ${
+                          checked
+                            ? "border-blue-400 bg-blue-50"
+                            : "border-slate-200 bg-white hover:bg-slate-50"
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggleSession(s.id)}
+                          className="accent-blue-600"
+                        />
+                        <span className="flex-1">
+                          {s.day_of_week.slice(0, 3)} {formatTime(s.start_time)}–{formatTime(s.end_time)}
+                        </span>
+                        <span className="text-slate-500">{s.teacher_name || "Unassigned"}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 mb-3">
+              <div>
+                <label className={labelClass}>Total Sessions</label>
+                <input
+                  type="number"
+                  min="1"
+                  value={draft.total_sessions}
+                  onChange={(e) => updateDraft("total_sessions", e.target.value)}
+                  placeholder="e.g. 16"
+                  className={inputClass}
+                />
+              </div>
+              <div>
+                <label className={labelClass}>Price</label>
+                <input
+                  type="number"
+                  min="0"
+                  value={draft.price}
+                  onChange={(e) => updateDraft("price", e.target.value)}
+                  placeholder="VNĐ"
+                  className={inputClass}
+                />
+              </div>
+              <div>
+                <label className={labelClass}>Payment Method</label>
+                <select
+                  value={draft.payment_method}
+                  onChange={(e) => updateDraft("payment_method", e.target.value)}
+                  className={inputClass}
+                >
+                  <option value="">— Select —</option>
+                  {PAYMENT_METHODS.map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className={labelClass}>Discount</label>
+                <input
+                  type="text"
+                  value={draft.discount}
+                  onChange={(e) => updateDraft("discount", e.target.value)}
+                  placeholder="e.g. 10% or 200,000đ"
+                  className={inputClass}
+                />
+              </div>
+            </div>
+
+            {draft.session_ids.length > 1 && (
+              <p className="text-xs text-slate-400 mb-3 italic">
+                Price, payment method, and discount above will apply to all {draft.session_ids.length}{" "}
+                selected sessions.
+              </p>
+            )}
+
+            {enrollError && <p className="text-xs text-red-600 mb-2">{enrollError}</p>}
+
+            <button
+              type="submit"
+              disabled={draft.session_ids.length === 0 || enrolling}
+              className="w-full py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-colors"
+            >
+              {enrolling
+                ? "Enrolling..."
+                : draft.session_ids.length > 1
+                  ? `Enroll in ${draft.session_ids.length} sessions`
+                  : "Enroll"}
+            </button>
+          </form>
+        </div>
+      </div>
+
+      {/* Session reviews — read-only */}
+      <div className="bg-white border border-slate-200 rounded-xl p-6">
+        <h2 className="text-lg font-semibold text-slate-900 mb-1">Session Reviews</h2>
+        <p className="text-xs text-slate-400 mb-4">Feedback left by teachers for this student.</p>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm border border-slate-200 rounded-lg table-fixed">
+            <colgroup>
+              <col className="w-[10%]" />
+              <col className="w-[14%]" />
+              <col className="w-[8%]" />
+              <col className="w-[9%]" />
+              <col className="w-[10%]" />
+              <col className="w-[24.5%]" />
+              <col className="w-[24.5%]" />
+            </colgroup>
+            <thead>
+              <tr className="bg-slate-50 text-left text-xs text-slate-500 uppercase tracking-wide">
+                <th className="px-3 py-2">Subject</th>
+                <th className="px-3 py-2">Class</th>
+                <th className="px-3 py-2">Day</th>
+                <th className="px-3 py-2">Date</th>
+                <th className="px-3 py-2">Teacher</th>
+                <th className="px-3 py-2">Session Content</th>
+                <th className="px-3 py-2">Teacher's Review</th>
+              </tr>
+            </thead>
+            <tbody>
+              {reviews.map((r) => {
+                const session = sessionLookup.get(String(r.session_id));
+                return (
+                  <tr key={r.id} className="border-t border-slate-100 align-top">
+                    <td className="px-3 py-2 text-slate-600 truncate">
+                      {session?.subject || "—"}
+                    </td>
+                    <td className="px-3 py-2 text-slate-800 font-medium truncate">
+                      {session?.class_name || "—"}
+                    </td>
+                    <td className="px-3 py-2 text-slate-600">
+                      {session ? session.day_of_week.slice(0, 3) : "—"}
+                    </td>
+                    <td className="px-3 py-2 text-slate-600">{r.review_date}</td>
+                    <td className="px-3 py-2 text-slate-600 truncate">
+                      {session?.teacher_name || r.teacher_name || "Unassigned"}
+                    </td>
+                    <td className="px-3 py-2 text-slate-600 whitespace-pre-wrap break-words">
+                      {r.session_content || "—"}
+                    </td>
+                    <td className="px-3 py-2 text-slate-600 whitespace-pre-wrap break-words">
+                      <div className="flex items-start justify-between gap-2">
+                        <span>{r.review_text || "—"}</span>
+                        {r.session_result && (
+                          <span
+                            className={`flex-shrink-0 text-xs px-1.5 py-0.5 rounded-full font-medium ${resultBadgeClass(r.session_result)}`}
+                          >
+                            {r.session_result}
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+
+              {reviews.length === 0 && (
+                <tr>
+                  <td colSpan={7} className="px-3 py-4 text-center text-slate-400 text-sm">
+                    No reviews yet for this student.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );

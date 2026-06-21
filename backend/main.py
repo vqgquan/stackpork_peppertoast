@@ -2,13 +2,15 @@ from fastapi import FastAPI, Depends, HTTPException
 from sqlalchemy import create_engine, Column, Integer, String, Date, Time, ForeignKey, Enum
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
-from pydantic import BaseModel, EmailStr
+from sqlalchemy.exc import IntegrityError
+from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 from typing import Optional
 from datetime import date, time
 from dotenv import load_dotenv
 import os
 import enum
 from fastapi.middleware.cors import CORSMiddleware
+
 
 load_dotenv()
 
@@ -45,6 +47,9 @@ class DayOfWeekEnum(str, enum.Enum):
     saturday = "Saturday"
     sunday = "Sunday"
 
+# --- Constants ---
+ALLOWED_SUBJECTS = ["Guitar", "Guitar điện", "Piano", "Organ", "Trống", "Thanh nhạc"]
+
 # --- Models ---
 class Teacher(Base):
     __tablename__ = "teachers"
@@ -55,13 +60,27 @@ class Teacher(Base):
     email = Column(String, nullable=True)
     address = Column(String, nullable=True)
     date_of_birth = Column(Date, nullable=True)
-    subjects = Column(String, nullable=True)
-    qualifications = Column(String, nullable=True)
-    facebook = Column(String, nullable=True)
-    schedule = Column(String, nullable=True)
+    subjects = Column(String, nullable=True)  # stored as comma-joined string, e.g. "Guitar, Piano"
+    qualifications = Column(String, nullable=True)  # stored as comma-joined string of degrees
     customer_source = Column(String, nullable=True)
     sessions = relationship("ClassSession", back_populates="teacher")
     session_reviews = relationship("SessionReview", back_populates="teacher")
+    availability = relationship("TeacherAvailability", back_populates="teacher", cascade="all, delete-orphan")
+
+class TeacherAvailability(Base):
+    """A teacher's general weekly teaching schedule/availability —
+    distinct from `ClassSession`, which is the specific slot they're
+    assigned to teach within a given class. Each slot is tagged with
+    the subject taught during it (relevant when a teacher teaches
+    more than one subject)."""
+    __tablename__ = "teacher_availability"
+    id = Column(Integer, primary_key=True, index=True)
+    teacher_id = Column(Integer, ForeignKey("teachers.id"), nullable=False)
+    day_of_week = Column(Enum(DayOfWeekEnum), nullable=False)
+    start_time = Column(Time, nullable=False)
+    end_time = Column(Time, nullable=False)
+    subject = Column(String, nullable=True)
+    teacher = relationship("Teacher", back_populates="availability")
 
 class Student(Base):
     __tablename__ = "students"
@@ -91,10 +110,6 @@ class Class(Base):
     sessions = relationship("ClassSession", back_populates="class_", cascade="all, delete-orphan")
 
 class ClassSession(Base):
-    """A single recurring weekly time slot for a class, with its own
-    teacher. A class can have multiple sessions (e.g. Piano on Monday
-    has a 9-11am session and an 11-1pm session), each independently
-    taught and independently enrolled."""
     __tablename__ = "class_sessions"
     id = Column(Integer, primary_key=True, index=True)
     class_id = Column(Integer, ForeignKey("classes.id"), nullable=False)
@@ -108,8 +123,6 @@ class ClassSession(Base):
     session_reviews = relationship("SessionReview", back_populates="session")
 
 class Enrollment(Base):
-    """Links a student to one specific ClassSession (not the whole
-    class) — so each session has its own independent student roster."""
     __tablename__ = "enrollments"
     id = Column(Integer, primary_key=True, index=True)
     student_id = Column(Integer, ForeignKey("students.id"), nullable=False)
@@ -130,7 +143,8 @@ class SessionReview(Base):
     session_id = Column(Integer, ForeignKey("class_sessions.id"), nullable=False)
     teacher_id = Column(Integer, ForeignKey("teachers.id"), nullable=False)
     review_date = Column(Date, nullable=False)
-    review_text = Column(String, nullable=True)
+    session_content = Column(String, nullable=True)   
+    review_text = Column(String, nullable=True)         
     session_result = Column(String, nullable=True)
     student = relationship("Student", back_populates="session_reviews")
     session = relationship("ClassSession", back_populates="session_reviews")
@@ -138,7 +152,17 @@ class SessionReview(Base):
 
 Base.metadata.create_all(bind=engine)
 
-# --- Schemas ---
+# --- Teacher schemas ---
+class TeacherAvailabilityCreate(BaseModel):
+    day_of_week: DayOfWeekEnum
+    start_time: time
+    end_time: time
+    subject: Optional[str] = None  # required only when the teacher has >1 subject; see TeacherCreate validator
+
+class TeacherAvailabilityOut(TeacherAvailabilityCreate):
+    id: int
+    class Config: from_attributes = True
+
 class TeacherCreate(BaseModel):
     name: str
     phone: str
@@ -146,15 +170,65 @@ class TeacherCreate(BaseModel):
     email: Optional[EmailStr] = None
     address: Optional[str] = None
     date_of_birth: Optional[date] = None
-    facebook: Optional[str] = None
-    subjects: Optional[str] = None
-    qualifications: Optional[str] = None
-    schedule: Optional[str] = None
-    customer_source: Optional[str] = None
+    subjects: list[str] = Field(..., min_length=1)
+    qualifications: list[str] = []  # degrees; zero or more
+    availability: list[TeacherAvailabilityCreate] = []
 
-class TeacherOut(TeacherCreate):
+    @field_validator("subjects")
+    @classmethod
+    def validate_subjects(cls, v):
+        invalid = [s for s in v if s not in ALLOWED_SUBJECTS]
+        if invalid:
+            raise ValueError(
+                f"Invalid subject(s): {', '.join(invalid)}. Must be one of {ALLOWED_SUBJECTS}"
+            )
+        return v
+
+    @model_validator(mode="after")
+    def resolve_availability_subjects(self):
+        """If the teacher only teaches one subject, every schedule
+        slot is automatically tagged with it. If they teach more than
+        one, each slot must explicitly name one of their subjects."""
+        single_subject = self.subjects[0] if len(self.subjects) == 1 else None
+        for slot in self.availability:
+            if single_subject is not None:
+                slot.subject = single_subject
+            elif not slot.subject:
+                raise ValueError(
+                    "Each schedule slot must specify a subject when the teacher has multiple subjects."
+                )
+            elif slot.subject not in self.subjects:
+                raise ValueError(
+                    f"Schedule subject '{slot.subject}' is not one of this teacher's selected subjects."
+                )
+        return self
+
+class TeacherOut(BaseModel):
     id: int
+    name: str
+    phone: str
+    gender: str
+    email: Optional[str] = None
+    address: Optional[str] = None
+    date_of_birth: Optional[date] = None
+    subjects: list[str] = []
+    qualifications: list[str] = []
     class Config: from_attributes = True
+
+def build_teacher_out(t: Teacher) -> TeacherOut:
+    """Builds TeacherOut manually so the comma-joined `subjects` and
+    `qualifications` columns can be exposed to the API as lists."""
+    return TeacherOut(
+        id=t.id,
+        name=t.name,
+        phone=t.phone,
+        gender=t.gender,
+        email=t.email,
+        address=t.address,
+        date_of_birth=t.date_of_birth,
+        subjects=[s.strip() for s in t.subjects.split(",")] if t.subjects else [],
+        qualifications=[q.strip() for q in t.qualifications.split(",")] if t.qualifications else [],
+    )
 
 class StudentCreate(BaseModel):
     name: str
@@ -177,6 +251,7 @@ class SessionReviewCreate(BaseModel):
     session_id: int
     teacher_id: int
     review_date: date
+    session_content: Optional[str] = None   # NEW
     review_text: Optional[str] = None
     session_result: Optional[str] = None
 
@@ -191,6 +266,10 @@ class ClassSessionCreate(BaseModel):
     end_time: time
     teacher_id: Optional[int] = None
 
+class SessionRosterStudentOut(BaseModel):
+    id: int
+    name: str
+
 class ClassSessionOut(BaseModel):
     id: int
     day_of_week: DayOfWeekEnum
@@ -198,6 +277,7 @@ class ClassSessionOut(BaseModel):
     end_time: time
     teacher_id: Optional[int] = None
     teacher_name: Optional[str] = None
+    students: list[SessionRosterStudentOut] = []
     class Config: from_attributes = True
 
 class ClassCreate(BaseModel):
@@ -220,20 +300,36 @@ class ClassOut(BaseModel):
     sessions: list[ClassSessionOut] = []
     class Config: from_attributes = True
 
+class ClassSessionReviewOut(BaseModel):
+    id: int
+    student_id: int
+    student_name: str
+    session_id: int
+    day_of_week: DayOfWeekEnum
+    teacher_id: Optional[int] = None
+    teacher_name: Optional[str] = None
+    review_date: date
+    session_content: Optional[str] = None
+    review_text: Optional[str] = None
+    session_result: Optional[str] = None
+
 def build_class_out(c: Class) -> ClassOut:
-    """Builds ClassOut manually so each session can carry its
-    teacher's name (not just teacher_id) without extra round trips."""
-    sessions = [
-        ClassSessionOut(
+    sessions = []
+    for s in c.sessions:
+        roster = [
+            SessionRosterStudentOut(id=e.student.id, name=e.student.name)
+            for e in s.enrollments
+            if e.status == EnrollmentStatusEnum.enrolled
+        ]
+        sessions.append(ClassSessionOut(
             id=s.id,
             day_of_week=s.day_of_week,
             start_time=s.start_time,
             end_time=s.end_time,
             teacher_id=s.teacher_id,
             teacher_name=s.teacher.name if s.teacher else None,
-        )
-        for s in c.sessions
-    ]
+            students=roster,
+        ))
     return ClassOut(
         id=c.id,
         name=c.name,
@@ -292,6 +388,7 @@ class TeacherSessionOut(BaseModel):
 
 class TeacherDetailOut(TeacherOut):
     sessions: list[TeacherSessionOut] = []
+    availability: list[TeacherAvailabilityOut] = []
 
 # --- App ---
 app = FastAPI(title="School Management API")
@@ -306,23 +403,23 @@ app.add_middleware(
 # Teachers
 @app.get("/teachers", response_model=list[TeacherOut])
 def get_teachers(db: Session = Depends(get_db)):
-    return db.query(Teacher).all()
+    return [build_teacher_out(t) for t in db.query(Teacher).all()]
 
 @app.get("/teachers/{id}", response_model=TeacherOut)
 def get_teacher(id: int, db: Session = Depends(get_db)):
     teacher = db.query(Teacher).filter(Teacher.id == id).first()
     if not teacher:
         raise HTTPException(status_code=404, detail="Teacher not found")
-    return teacher
+    return build_teacher_out(teacher)
 
 @app.get("/teachers/{id}/detail", response_model=TeacherDetailOut)
 def get_teacher_details(id: int, db: Session = Depends(get_db)):
     teacher = db.query(Teacher).filter(Teacher.id == id).first()
     if not teacher:
         raise HTTPException(status_code=404, detail="Teacher not found")
-    
+
     sessions = []
-    for s in teacher.sessions: 
+    for s in teacher.sessions:
         c = s.class_
         sessions.append(TeacherSessionOut(
             session_id=s.id,
@@ -333,28 +430,53 @@ def get_teacher_details(id: int, db: Session = Depends(get_db)):
             start_time=s.start_time,
             end_time=s.end_time
         ))
-    result = TeacherDetailOut.model_validate(teacher)
-    result.sessions = sessions
-    return result
+
+    availability = [TeacherAvailabilityOut.model_validate(a) for a in teacher.availability]
+
+    base = build_teacher_out(teacher)
+    return TeacherDetailOut(**base.model_dump(), sessions=sessions, availability=availability)
 
 @app.post("/teachers", response_model=TeacherOut, status_code=201)
 def create_teacher(teacher: TeacherCreate, db: Session = Depends(get_db)):
-    db_teacher = Teacher(**teacher.model_dump())
+    data = teacher.model_dump()
+    subjects_list = data.pop("subjects")
+    qualifications_list = data.pop("qualifications")
+    availability_data = data.pop("availability", [])
+    data["subjects"] = ", ".join(subjects_list)
+    data["qualifications"] = ", ".join(qualifications_list)
+
+    db_teacher = Teacher(**data)
     db.add(db_teacher)
+    db.flush()  # assigns db_teacher.id before commit so we can attach availability rows
+    for slot in availability_data:
+        db.add(TeacherAvailability(teacher_id=db_teacher.id, **slot))
     db.commit()
     db.refresh(db_teacher)
-    return db_teacher
+    return build_teacher_out(db_teacher)
 
 @app.put("/teachers/{id}", response_model=TeacherOut)
 def update_teacher(id: int, updated: TeacherCreate, db: Session = Depends(get_db)):
     teacher = db.query(Teacher).filter(Teacher.id == id).first()
     if not teacher:
         raise HTTPException(status_code=404, detail="Teacher not found")
-    for key, value in updated.model_dump().items():
+
+    data = updated.model_dump()
+    subjects_list = data.pop("subjects")
+    qualifications_list = data.pop("qualifications")
+    availability_data = data.pop("availability", [])
+    data["subjects"] = ", ".join(subjects_list)
+    data["qualifications"] = ", ".join(qualifications_list)
+
+    for key, value in data.items():
         setattr(teacher, key, value)
+
+    db.query(TeacherAvailability).filter(TeacherAvailability.teacher_id == id).delete()
+    for slot in availability_data:
+        db.add(TeacherAvailability(teacher_id=id, **slot))
+
     db.commit()
     db.refresh(teacher)
-    return teacher
+    return build_teacher_out(teacher)
 
 @app.delete("/teachers/{id}", status_code=204)
 def delete_teacher(id: int, db: Session = Depends(get_db)):
@@ -580,3 +702,102 @@ def get_review(id: int, db: Session = Depends(get_db)):
 @app.get("/reviews", response_model=list[SessionReviewOut])
 def get_all_reviews(db: Session = Depends(get_db)):
     return db.query(SessionReview).all()
+
+@app.get("/classes/{class_id}/reviews", response_model=list[ClassSessionReviewOut])
+def get_class_reviews(class_id: int, db: Session = Depends(get_db)):
+    c = db.query(Class).filter(Class.id == class_id).first()
+    if not c:
+        raise HTTPException(status_code=404, detail="Class not found")
+
+    session_ids = [s.id for s in c.sessions]
+    reviews = (
+        db.query(SessionReview)
+        .filter(SessionReview.session_id.in_(session_ids))
+        .all()
+        if session_ids else []
+    )
+
+    out = [
+        ClassSessionReviewOut(
+            id=r.id,
+            student_id=r.student_id,
+            student_name=r.student.name,
+            session_id=r.session_id,
+            day_of_week=r.session.day_of_week,
+            teacher_id=r.teacher_id,
+            teacher_name=r.teacher.name if r.teacher else None,
+            review_date=r.review_date,
+            session_content=r.session_content,
+            review_text=r.review_text,
+            session_result=r.session_result,
+        )
+        for r in reviews
+    ]
+    return sorted(out, key=lambda r: r.review_date, reverse=True)
+
+@app.post("/classes/{class_id}/sessions", response_model=ClassSessionOut, status_code=201)
+def create_class_session(class_id: int, payload: ClassSessionCreate, db: Session = Depends(get_db)):
+    c = db.query(Class).filter(Class.id == class_id).first()
+    if not c:
+        raise HTTPException(status_code=404, detail="Class not found")
+    if payload.teacher_id is not None and not db.query(Teacher).filter(Teacher.id == payload.teacher_id).first():
+        raise HTTPException(status_code=404, detail="Teacher not found")
+
+    s = ClassSession(class_id=class_id, **payload.model_dump())
+    db.add(s)
+    db.commit()
+    db.refresh(s)
+    return ClassSessionOut(
+        id=s.id,
+        day_of_week=s.day_of_week,
+        start_time=s.start_time,
+        end_time=s.end_time,
+        teacher_id=s.teacher_id,
+        teacher_name=s.teacher.name if s.teacher else None,
+        students=[],
+    )
+
+@app.put("/sessions/{session_id}", response_model=ClassSessionOut)
+def update_class_session(session_id: int, payload: ClassSessionCreate, db: Session = Depends(get_db)):
+    s = db.query(ClassSession).filter(ClassSession.id == session_id).first()
+    if not s:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if payload.teacher_id is not None and not db.query(Teacher).filter(Teacher.id == payload.teacher_id).first():
+        raise HTTPException(status_code=404, detail="Teacher not found")
+
+    s.day_of_week = payload.day_of_week
+    s.start_time = payload.start_time
+    s.end_time = payload.end_time
+    s.teacher_id = payload.teacher_id
+    db.commit()
+    db.refresh(s)
+
+    roster = [
+        SessionRosterStudentOut(id=e.student.id, name=e.student.name)
+        for e in s.enrollments
+        if e.status == EnrollmentStatusEnum.enrolled
+    ]
+    return ClassSessionOut(
+        id=s.id,
+        day_of_week=s.day_of_week,
+        start_time=s.start_time,
+        end_time=s.end_time,
+        teacher_id=s.teacher_id,
+        teacher_name=s.teacher.name if s.teacher else None,
+        students=roster,
+    )
+
+@app.delete("/sessions/{session_id}", status_code=204)
+def delete_class_session(session_id: int, db: Session = Depends(get_db)):
+    s = db.query(ClassSession).filter(ClassSession.id == session_id).first()
+    if not s:
+        raise HTTPException(status_code=404, detail="Session not found")
+    try:
+        db.delete(s)
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail="Can't delete this session — it has enrolled students or reviews attached. Remove those first.",
+        )

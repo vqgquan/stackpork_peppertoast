@@ -1,12 +1,14 @@
 import { Routes, Route, Link, useLocation } from "react-router-dom";
+import Dashboard from "./pages/Dashboard";
 import Teachers from "./pages/Teachers";
 import NewTeacher from "./pages/NewTeacher";
+import TeacherDetail from "./pages/TeacherDetail";
 import Classes from "./pages/Classes";
 import NewClass from "./pages/NewClass";
+import ClassDetail from "./pages/ClassDetail";
 import Students from "./pages/Students";
 import NewStudent from "./pages/NewStudent";
 import StudentDetail from "./pages/StudentDetail";
-import TeacherDetail from './pages/TeacherDetail'
 
 export default function App() {
   const location = useLocation();
@@ -18,6 +20,7 @@ export default function App() {
           School Admin
         </p>
         {[
+          ["/", "Dashboard"],
           ["/teachers", "Teachers"],
           ["/teachers/new", "Add Teacher"],
           ["/students", "Students"],
@@ -40,14 +43,16 @@ export default function App() {
       </aside>
       <main className="flex-1 overflow-y-auto">
         <Routes>
+          <Route path="/" element={<Dashboard />} />
           <Route path="/teachers" element={<Teachers />} />
           <Route path="/teachers/new" element={<NewTeacher />} />
+          <Route path="/teachers/:id" element={<TeacherDetail />} />
           <Route path="/classes" element={<Classes />} />
           <Route path="/classes/new" element={<NewClass />} />
+          <Route path="/classes/:id" element={<ClassDetail />} />
           <Route path="/students" element={<Students />} />
           <Route path="/students/new" element={<NewStudent />} />
           <Route path="/students/:id" element={<StudentDetail />} />
-          <Route path="/teachers/:id" element={<TeacherDetail />} />
         </Routes>
       </main>
     </div>

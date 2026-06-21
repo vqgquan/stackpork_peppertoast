@@ -28,10 +28,10 @@ async function request(method, path, body = null) {
 
 export const getTeachers = () => request("GET", "/teachers");
 export const getTeacher = (id) => request("GET", `/teachers/${id}`);
+export const getTeacherDetail = (id) => request("GET", `/teachers/${id}/detail`);
 export const createTeacher = (data) => request("POST", "/teachers", data);
 export const updateTeacher = (id, data) => request("PUT", `/teachers/${id}`, data);
 export const deleteTeacher = (id) => request("DELETE", `/teachers/${id}`);
-export const getTeacherDetail = (id) => request("GET", `/teachers/${id}/detail`);
 
 export const getStudents = () => request("GET", "/students");
 export const getStudent = (id) => request("GET", `/students/${id}`);
@@ -44,7 +44,11 @@ export const getClasses = () => request("GET", "/classes");
 export const getClass = (id) => request("GET", `/classes/${id}`);
 export const createClass = (data) => request("POST", "/classes", data);
 export const updateClass = (id, data) => request("PUT", `/classes/${id}`, data);
-export const deleteClass = (id) => request("DELETE", `/classes/${id}`); 
+export const deleteClass = (id) => request("DELETE", `/classes/${id}`);
+
+export const createClassSession = (classId, data) => request("POST", `/classes/${classId}/sessions`, data);
+export const updateClassSession = (sessionId, data) => request("PUT", `/sessions/${sessionId}`, data);
+export const deleteClassSession = (sessionId) => request("DELETE", `/sessions/${sessionId}`);
 
 export const getEnrollments = () => request("GET", "/enrollments");
 export const createEnrollment = (data) => request("POST", "/enrollments", data);
@@ -53,5 +57,9 @@ export const getEnrollment = (id) => request("GET", `/enrollments/${id}`);
 export const updateEnrollment = (id, data) => request("PUT", `/enrollments/${id}`, data);
 
 export const getStudentReviews = (studentId) => request("GET", `/students/${studentId}/reviews`);
-export const createReview = (studentId, data) => request("POST", `/students/${studentId}/reviews`, data);
-export const deleteReview = (reviewId) => request("DELETE", `/reviews/${reviewId}`);
+export const createStudentReview = (studentId, data) => request("POST", `/students/${studentId}/reviews`, data);
+export const getTeacherReviews = (teacherId) => request("GET", `/teachers/${teacherId}/reviews`);
+export const getReviews = () => request("GET", "/reviews");
+export const getReview = (id) => request("GET", `/reviews/${id}`);
+export const getClassReviews = (classId) => request("GET", `/classes/${classId}/reviews`);
+export const deleteReview = (id) => request("DELETE", `/reviews/${id}`);

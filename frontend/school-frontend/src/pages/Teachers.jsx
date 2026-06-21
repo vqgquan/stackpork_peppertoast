@@ -76,7 +76,7 @@ export default function Teachers() {
                   onClick={() => navigate(`/teachers/${t.id}`)}
                   className="border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer"
                 >
-                  <td className="px-4 py-3 font-medium text-slate-800">{t.name}</td>
+                  <td className="px-4 py-3 font-medium text-blue-700">{t.name}</td>
                   <td className="px-4 py-3">
                     {t.subjects
                       ? <span className="inline-block text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">{t.subjects}</span>

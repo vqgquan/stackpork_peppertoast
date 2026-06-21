@@ -3,7 +3,7 @@ import { useParams, Link } from "react-router-dom"
 import { getTeacherDetail } from "../api"
 
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-const HOUR_HEIGHT = 48
+const HOUR_HEIGHT = 44
 const TOTAL_HOURS = 24
 const GUTTER_WIDTH = 52
 
@@ -181,7 +181,7 @@ export default function TeacherDetail() {
     if (!teacher) return null
 
     return (
-        <div className="p-8 max-w-6xl">
+        <div className="p-8 w-full">
             <Link to="/teachers" className="text-sm text-blue-600 hover:underline mb-4 inline-block">
                 ← Back to Teachers
             </Link>
@@ -218,21 +218,30 @@ export default function TeacherDetail() {
                 </div>
             </div>
 
-            {/* Session list */}
-            <div className="bg-white border border-slate-200 rounded-xl p-6 mb-6">
-                <h2 className="text-lg font-semibold text-slate-900 mb-4">Teaching Sessions</h2>
-                {teacher.sessions.length === 0 ? (
-                    <p className="text-sm text-slate-400">No sessions assigned yet.</p>
-                ) : (
-                    <div className="space-y-2">
-                        {teacher.sessions.map(s => (
-                            <div key={s.session_id}
-                                className="flex items-center justify-between border border-slate-100 rounded-lg px-3 py-2">
-                                <div>
-                                    <div className="flex items-center gap-1.5">
-                                        <p className="text-sm font-medium text-slate-800">{s.class_name}</p>
+            {/* Schedule + Teaching Sessions, side by side to use full width */}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <div className="lg:col-span-2 bg-white border border-slate-200 rounded-xl p-6">
+                    <h2 className="text-lg font-semibold text-slate-900 mb-4">Weekly Schedule</h2>
+                    {teacher.sessions.length === 0 ? (
+                        <p className="text-sm text-slate-400">No scheduled sessions yet.</p>
+                    ) : (
+                        <WeeklyTimetable sessions={teacher.sessions} />
+                    )}
+                </div>
+
+                <div className="bg-white border border-slate-200 rounded-xl p-6">
+                    <h2 className="text-lg font-semibold text-slate-900 mb-4">Teaching Sessions</h2>
+                    {teacher.sessions.length === 0 ? (
+                        <p className="text-sm text-slate-400">No sessions assigned yet.</p>
+                    ) : (
+                        <div className="space-y-2 max-h-[400px] overflow-y-auto pr-1">
+                            {teacher.sessions.map(s => (
+                                <div key={s.session_id}
+                                    className="border border-slate-100 rounded-lg px-3 py-2">
+                                    <div className="flex items-center gap-1.5 flex-wrap">
+                                        <p className="text-sm font-medium text-slate-800 truncate">{s.class_name}</p>
                                         {s.subject && (
-                                            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-50 text-purple-700">
+                                            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-50 text-purple-700 flex-shrink-0">
                                                 {s.subject}
                                             </span>
                                         )}
@@ -241,20 +250,10 @@ export default function TeacherDetail() {
                                         {s.day_of_week.slice(0, 3)} {formatTime(s.start_time)}–{formatTime(s.end_time)}
                                     </p>
                                 </div>
-                            </div>
-                        ))}
-                    </div>
-                )}
-            </div>
-
-            {/* Weekly timetable */}
-            <div className="bg-white border border-slate-200 rounded-xl p-6">
-                <h2 className="text-lg font-semibold text-slate-900 mb-4">Weekly Schedule</h2>
-                {teacher.sessions.length === 0 ? (
-                    <p className="text-sm text-slate-400">No scheduled sessions yet.</p>
-                ) : (
-                    <WeeklyTimetable sessions={teacher.sessions} />
-                )}
+                            ))}
+                        </div>
+                    )}
+                </div>
             </div>
         </div>
     )

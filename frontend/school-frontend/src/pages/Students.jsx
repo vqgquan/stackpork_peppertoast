@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from "react"
-import { Link } from "react-router-dom"
+import { useNavigate } from "react-router-dom"
 import { getStudents, deleteStudent } from "../api"
 import SearchBar from "../components/SearchBar"
 
@@ -11,6 +11,7 @@ const SEARCH_FIELDS = [
 ]
 
 export default function Students() {
+  const navigate = useNavigate()
   const [students, setStudents] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -32,7 +33,8 @@ export default function Students() {
     )
   }, [students, filters])
 
-  async function handleDelete(id) {
+  async function handleDelete(e, id) {
+    e.stopPropagation()  // prevent row click from firing
     if (!confirm("Delete this student?")) return
     try {
       await deleteStudent(id)
@@ -75,12 +77,12 @@ export default function Students() {
             </thead>
             <tbody>
               {filtered.map(s => (
-                <tr key={s.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
-                  <td className="px-4 py-3 font-medium">
-                    <Link to={`/students/${s.id}`} className="text-blue-700 hover:underline">
-                      {s.name}
-                    </Link>
-                  </td>
+                <tr
+                  key={s.id}
+                  onClick={() => navigate(`/students/${s.id}`)}
+                  className="border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer"
+                >
+                  <td className="px-4 py-3 font-medium text-blue-700">{s.name}</td>
                   <td className="px-4 py-3 text-slate-600">{s.phone}</td>
                   <td className="px-4 py-3">
                     <span className={`inline-block text-xs px-2 py-0.5 rounded-full font-medium ${
@@ -104,7 +106,7 @@ export default function Students() {
                   </td>
                   <td className="px-4 py-3 text-right">
                     <button
-                      onClick={() => handleDelete(s.id)}
+                      onClick={(e) => handleDelete(e, s.id)}
                       className="text-xs text-red-400 hover:text-red-600 font-medium"
                     >
                       Delete
