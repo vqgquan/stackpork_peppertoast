@@ -9,6 +9,8 @@ import {
   createClassSession,
   updateClassSession,
   deleteClassSession,
+  getAttendance,
+  bulkUpsertAttendance,
 } from "../api";
 
 const DAYS = [
@@ -129,7 +131,10 @@ function WeeklySchedule({ sessions }) {
     <div className="border border-slate-200 rounded-xl overflow-hidden">
       <div className="overflow-y-auto" style={{ maxHeight: 560 }}>
         <div className="flex sticky top-0 z-20 bg-white border-b border-slate-200">
-          <div style={{ width: GUTTER_WIDTH }} className="flex-shrink-0 bg-white" />
+          <div
+            style={{ width: GUTTER_WIDTH }}
+            className="flex-shrink-0 bg-white"
+          />
           {DAYS.map((day) => (
             <div
               key={day}
@@ -141,7 +146,10 @@ function WeeklySchedule({ sessions }) {
         </div>
 
         <div className="flex">
-          <div style={{ width: GUTTER_WIDTH, height: totalHeight }} className="relative flex-shrink-0">
+          <div
+            style={{ width: GUTTER_WIDTH, height: totalHeight }}
+            className="relative flex-shrink-0"
+          >
             {Array.from({ length: TOTAL_HOURS }).map((_, h) => (
               <div
                 key={h}
@@ -154,13 +162,22 @@ function WeeklySchedule({ sessions }) {
           </div>
 
           <div className="relative flex-1" style={{ height: totalHeight }}>
-            <div className="absolute inset-0 pointer-events-none" style={{ backgroundImage: hourLineGradient }} />
+            <div
+              className="absolute inset-0 pointer-events-none"
+              style={{ backgroundImage: hourLineGradient }}
+            />
             <div className="absolute inset-0 grid grid-cols-7">
               {DAYS.map((day) => (
-                <div key={day} className="relative border-l border-slate-100 first:border-l-0">
+                <div
+                  key={day}
+                  className="relative border-l border-slate-100 first:border-l-0"
+                >
                   {layoutDayEvents(eventsByDay[day]).map((e) => {
                     const top = (e.startMin / 60) * HOUR_HEIGHT;
-                    const height = Math.max(((e.endMin - e.startMin) / 60) * HOUR_HEIGHT, 22);
+                    const height = Math.max(
+                      ((e.endMin - e.startMin) / 60) * HOUR_HEIGHT,
+                      22,
+                    );
                     const widthPct = 100 / e.trackCount;
                     const leftPct = e.track * widthPct;
                     return (
@@ -182,7 +199,8 @@ function WeeklySchedule({ sessions }) {
                           {e.teacher_name ?? "Unassigned"}
                         </p>
                         <p className="text-[10px] text-blue-400 truncate leading-tight">
-                          {e.studentCount} student{e.studentCount === 1 ? "" : "s"}
+                          {e.studentCount} student
+                          {e.studentCount === 1 ? "" : "s"}
                         </p>
                       </div>
                     );
@@ -201,7 +219,12 @@ const inputClass =
   "w-full px-2 py-1.5 text-sm border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white";
 
 function makeEmptySessionDraft() {
-  return { day_of_week: "Monday", start_time: "09:00", end_time: "10:00", teacher_id: "" };
+  return {
+    day_of_week: "Monday",
+    start_time: "09:00",
+    end_time: "10:00",
+    teacher_id: "",
+  };
 }
 
 // One row in the session management list. Handles its own edit state
@@ -251,18 +274,26 @@ function SessionRow({ session, teachers, onSave, onDelete }) {
       <div className="flex items-center justify-between border border-slate-100 rounded-lg px-3 py-2">
         <div className="min-w-0">
           <p className="text-sm font-medium text-slate-800">
-            {session.day_of_week.slice(0, 3)} {formatTime(session.start_time)}–{formatTime(session.end_time)}
+            {session.day_of_week.slice(0, 3)} {formatTime(session.start_time)}–
+            {formatTime(session.end_time)}
           </p>
           <p className="text-xs text-slate-400 truncate">
-            {session.teacher_name ?? "Unassigned"} · {session.students.length} student
+            {session.teacher_name ?? "Unassigned"} · {session.students.length}{" "}
+            student
             {session.students.length === 1 ? "" : "s"}
           </p>
         </div>
         <div className="flex items-center gap-3 flex-shrink-0 ml-3">
-          <button onClick={startEdit} className="text-xs text-blue-600 hover:text-blue-700 font-medium">
+          <button
+            onClick={startEdit}
+            className="text-xs text-blue-600 hover:text-blue-700 font-medium"
+          >
             Edit
           </button>
-          <button onClick={() => onDelete(session)} className="text-xs text-red-400 hover:text-red-600 font-medium">
+          <button
+            onClick={() => onDelete(session)}
+            className="text-xs text-red-400 hover:text-red-600 font-medium"
+          >
             Delete
           </button>
         </div>
@@ -275,7 +306,9 @@ function SessionRow({ session, teachers, onSave, onDelete }) {
       <div className="grid grid-cols-2 gap-2">
         <select
           value={draft.day_of_week}
-          onChange={(e) => setDraft((p) => ({ ...p, day_of_week: e.target.value }))}
+          onChange={(e) =>
+            setDraft((p) => ({ ...p, day_of_week: e.target.value }))
+          }
           className={inputClass}
         >
           {DAYS.map((d) => (
@@ -286,7 +319,9 @@ function SessionRow({ session, teachers, onSave, onDelete }) {
         </select>
         <select
           value={draft.teacher_id}
-          onChange={(e) => setDraft((p) => ({ ...p, teacher_id: e.target.value }))}
+          onChange={(e) =>
+            setDraft((p) => ({ ...p, teacher_id: e.target.value }))
+          }
           className={inputClass}
         >
           <option value="">Unassigned</option>
@@ -299,13 +334,17 @@ function SessionRow({ session, teachers, onSave, onDelete }) {
         <input
           type="time"
           value={draft.start_time}
-          onChange={(e) => setDraft((p) => ({ ...p, start_time: e.target.value }))}
+          onChange={(e) =>
+            setDraft((p) => ({ ...p, start_time: e.target.value }))
+          }
           className={inputClass}
         />
         <input
           type="time"
           value={draft.end_time}
-          onChange={(e) => setDraft((p) => ({ ...p, end_time: e.target.value }))}
+          onChange={(e) =>
+            setDraft((p) => ({ ...p, end_time: e.target.value }))
+          }
           className={inputClass}
         />
       </div>
@@ -345,6 +384,17 @@ export default function ClassDetail() {
   const [submitting, setSubmitting] = useState(false);
   const [reviewError, setReviewError] = useState(null);
 
+  const [rollCallSessionId, setRollCallSessionId] = useState("");
+  const [rollCallDate, setRollCallDate] = useState(
+    new Date().toISOString().slice(0, 10),
+  );
+
+  const [attendance, setAttendance] = useState({});
+  const [loadingAttendance, setLoadingAttendance] = useState(false);
+  const [savingAttendance, setSavingAttendance] = useState(false);
+  const [attendanceError, setAttendanceError] = useState(null);
+  const [attendanceSuccess, setAttendanceSuccess] = useState(false);
+
   function makeEmptyReviewDraft() {
     return {
       session_id: "",
@@ -357,11 +407,87 @@ export default function ClassDetail() {
   }
 
   function loadClass() {
-    return getClass(id).then(setClassData);
+    return getClass(id).then((data) => {
+      setClassData(data);
+      // Set default session for roll call if not already set
+      if (data.sessions.length > 0 && !rollCallSessionId) {
+        setRollCallSessionId(String(data.sessions[0].id));
+      }
+    });
   }
   function loadReviews() {
     return getClassReviews(id).then(setReviews);
   }
+
+  async function handleSaveAttendance() {
+    if (!rollCallSession || !rollCallDate) return;
+    setSavingAttendance(true);
+    setAttendanceError(null);
+    setAttendanceSuccess(false);
+    try {
+      const records = Object.entries(attendance).map(([studentId, a]) => ({
+        student_id: Number(studentId),
+        session_id: Number(rollCallSessionId),
+        teacher_id: rollCallSession.teacher_id || null,
+        attendance_date: rollCallDate,
+        attended: a.attended,
+        note: a.note || null,
+      }));
+      await bulkUpsertAttendance(records);
+      setAttendanceSuccess(true);
+      setTimeout(() => setAttendanceSuccess(false), 3000);
+    } catch (err) {
+      setAttendanceError(err.message);
+    } finally {
+      setSavingAttendance(false);
+    }
+  }
+
+  const rollCallSession = useMemo(
+    () =>
+      classData?.sessions.find((s) => String(s.id) === rollCallSessionId) ??
+      null,
+    [classData, rollCallSessionId],
+  );
+
+  useEffect(() => {
+    if (!rollCallSession || !rollCallDate) return;
+    setLoadingAttendance(true);
+
+    getAttendance({
+      session_id: rollCallSessionId,
+      date_from: rollCallDate,
+      date_to: rollCallDate,
+    })
+      .then((records) => {
+        const existingMap = {};
+        records.forEach((r) => {
+          existingMap[r.student_id] = {
+            attended: r.attended,
+            note: r.note || "",
+            record_id: r.id,
+          };
+        });
+        // Merge with enrolled students — default to attended=true
+        const merged = {};
+        rollCallSession.students.forEach((s) => {
+          merged[s.id] = existingMap[s.id] ?? {
+            attended: true,
+            note: "",
+            record_id: null,
+          };
+        });
+        setAttendance(merged);
+      })
+      .catch(() => {
+        const merged = {};
+        rollCallSession.students.forEach((s) => {
+          merged[s.id] = { attended: true, note: "", record_id: null };
+        });
+        setAttendance(merged);
+      })
+      .finally(() => setLoadingAttendance(false));
+  }, [rollCallSessionId, rollCallDate, rollCallSession]);
 
   useEffect(() => {
     setLoading(true);
@@ -372,7 +498,10 @@ export default function ClassDetail() {
   }, [id]);
 
   const selectedSession = useMemo(
-    () => classData?.sessions.find((s) => String(s.id) === String(draft.session_id)) ?? null,
+    () =>
+      classData?.sessions.find(
+        (s) => String(s.id) === String(draft.session_id),
+      ) ?? null,
     [classData, draft.session_id],
   );
 
@@ -386,7 +515,9 @@ export default function ClassDetail() {
         day_of_week: newSession.day_of_week,
         start_time: newSession.start_time,
         end_time: newSession.end_time,
-        teacher_id: newSession.teacher_id ? Number(newSession.teacher_id) : null,
+        teacher_id: newSession.teacher_id
+          ? Number(newSession.teacher_id)
+          : null,
       });
       setNewSession(makeEmptySessionDraft());
       await loadClass();
@@ -419,7 +550,9 @@ export default function ClassDetail() {
 
   // --- Review management ---
   function handleSessionChange(sessionId) {
-    const session = classData.sessions.find((s) => String(s.id) === String(sessionId));
+    const session = classData.sessions.find(
+      (s) => String(s.id) === String(sessionId),
+    );
     setDraft((prev) => ({
       ...prev,
       session_id: sessionId,
@@ -472,7 +605,10 @@ export default function ClassDetail() {
 
   return (
     <div className="p-8 w-full">
-      <Link to="/classes" className="text-sm text-blue-600 hover:underline mb-4 inline-block">
+      <Link
+        to="/classes"
+        className="text-sm text-blue-600 hover:underline mb-4 inline-block"
+      >
         ← Back to Classes
       </Link>
 
@@ -480,7 +616,9 @@ export default function ClassDetail() {
       <div className="bg-white border border-slate-200 rounded-xl p-6 mb-6">
         <div className="flex items-start justify-between">
           <div>
-            <h1 className="text-2xl font-semibold text-slate-900">{classData.name}</h1>
+            <h1 className="text-2xl font-semibold text-slate-900">
+              {classData.name}
+            </h1>
             <div className="flex items-center gap-2 mt-1.5">
               {classData.subject && (
                 <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-purple-50 text-purple-700">
@@ -495,12 +633,16 @@ export default function ClassDetail() {
             </div>
           </div>
           <div className="text-right">
-            <p className="text-2xl font-semibold text-slate-900 leading-tight">{classData.sessions.length}</p>
+            <p className="text-2xl font-semibold text-slate-900 leading-tight">
+              {classData.sessions.length}
+            </p>
             <p className="text-xs text-slate-400">Sessions / week</p>
           </div>
         </div>
 
-        {classData.description && <p className="text-sm text-slate-600 mt-4">{classData.description}</p>}
+        {classData.description && (
+          <p className="text-sm text-slate-600 mt-4">{classData.description}</p>
+        )}
 
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4 text-sm">
           <div>
@@ -517,19 +659,27 @@ export default function ClassDetail() {
       {/* Schedule + session management, side by side to use full width */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
         <div className="lg:col-span-2 bg-white border border-slate-200 rounded-xl p-6">
-          <h2 className="text-lg font-semibold text-slate-900 mb-4">Schedule</h2>
+          <h2 className="text-lg font-semibold text-slate-900 mb-4">
+            Schedule
+          </h2>
           {classData.sessions.length === 0 ? (
-            <p className="text-sm text-slate-400">No sessions scheduled for this class yet.</p>
+            <p className="text-sm text-slate-400">
+              No sessions scheduled for this class yet.
+            </p>
           ) : (
             <WeeklySchedule sessions={classData.sessions} />
           )}
         </div>
 
         <div className="bg-white border border-slate-200 rounded-xl p-6">
-          <h2 className="text-lg font-semibold text-slate-900 mb-4">Manage Sessions</h2>
+          <h2 className="text-lg font-semibold text-slate-900 mb-4">
+            Manage Sessions
+          </h2>
 
           {classData.sessions.length === 0 ? (
-            <p className="text-sm text-slate-400 mb-4">No sessions yet — add the first one below.</p>
+            <p className="text-sm text-slate-400 mb-4">
+              No sessions yet — add the first one below.
+            </p>
           ) : (
             <div className="space-y-2 mb-4 max-h-[400px] overflow-y-auto pr-1">
               {classData.sessions.map((s) => (
@@ -544,12 +694,19 @@ export default function ClassDetail() {
             </div>
           )}
 
-          <form onSubmit={handleAddSession} className="border-t border-slate-100 pt-4">
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">Add a session</p>
+          <form
+            onSubmit={handleAddSession}
+            className="border-t border-slate-100 pt-4"
+          >
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">
+              Add a session
+            </p>
             <div className="grid grid-cols-2 gap-2 mb-3">
               <select
                 value={newSession.day_of_week}
-                onChange={(e) => setNewSession((p) => ({ ...p, day_of_week: e.target.value }))}
+                onChange={(e) =>
+                  setNewSession((p) => ({ ...p, day_of_week: e.target.value }))
+                }
                 className={inputClass}
               >
                 {DAYS.map((d) => (
@@ -560,7 +717,9 @@ export default function ClassDetail() {
               </select>
               <select
                 value={newSession.teacher_id}
-                onChange={(e) => setNewSession((p) => ({ ...p, teacher_id: e.target.value }))}
+                onChange={(e) =>
+                  setNewSession((p) => ({ ...p, teacher_id: e.target.value }))
+                }
                 className={inputClass}
               >
                 <option value="">Unassigned</option>
@@ -573,17 +732,23 @@ export default function ClassDetail() {
               <input
                 type="time"
                 value={newSession.start_time}
-                onChange={(e) => setNewSession((p) => ({ ...p, start_time: e.target.value }))}
+                onChange={(e) =>
+                  setNewSession((p) => ({ ...p, start_time: e.target.value }))
+                }
                 className={inputClass}
               />
               <input
                 type="time"
                 value={newSession.end_time}
-                onChange={(e) => setNewSession((p) => ({ ...p, end_time: e.target.value }))}
+                onChange={(e) =>
+                  setNewSession((p) => ({ ...p, end_time: e.target.value }))
+                }
                 className={inputClass}
               />
             </div>
-            {addSessionError && <p className="text-xs text-red-600 mb-2">{addSessionError}</p>}
+            {addSessionError && (
+              <p className="text-xs text-red-600 mb-2">{addSessionError}</p>
+            )}
             <button
               type="submit"
               disabled={addingSession}
@@ -597,8 +762,12 @@ export default function ClassDetail() {
 
       {/* Session reviews */}
       <div className="bg-white border border-slate-200 rounded-xl p-6">
-        <h2 className="text-lg font-semibold text-slate-900 mb-1">Session Reviews</h2>
-        <p className="text-xs text-slate-400 mb-4">Leave feedback for a student after a specific session.</p>
+        <h2 className="text-lg font-semibold text-slate-900 mb-1">
+          Session Reviews
+        </h2>
+        <p className="text-xs text-slate-400 mb-4">
+          Leave feedback for a student after a specific session.
+        </p>
 
         <div className="overflow-x-auto">
           <table className="w-full text-sm border border-slate-200 rounded-lg table-fixed">
@@ -656,7 +825,9 @@ export default function ClassDetail() {
                     ))}
                   </select>
                   {selectedSession && selectedSession.students.length === 0 && (
-                    <p className="text-[10px] text-slate-400 mt-1">No students enrolled.</p>
+                    <p className="text-[10px] text-slate-400 mt-1">
+                      No students enrolled.
+                    </p>
                   )}
                 </td>
                 <td className="px-3 py-2 align-top">
@@ -669,13 +840,17 @@ export default function ClassDetail() {
                   />
                 </td>
                 <td className="px-3 py-2 align-top text-slate-600">
-                  {selectedSession ? selectedSession.teacher_name ?? "Unassigned" : "—"}
+                  {selectedSession
+                    ? (selectedSession.teacher_name ?? "Unassigned")
+                    : "—"}
                 </td>
                 <td className="px-3 py-2 align-top">
                   <textarea
                     rows={3}
                     value={draft.session_content}
-                    onChange={(e) => updateDraft("session_content", e.target.value)}
+                    onChange={(e) =>
+                      updateDraft("session_content", e.target.value)
+                    }
                     placeholder="What was covered..."
                     className={inputClass}
                   />
@@ -692,7 +867,9 @@ export default function ClassDetail() {
                 <td className="px-3 py-2 align-top">
                   <select
                     value={draft.session_result}
-                    onChange={(e) => updateDraft("session_result", e.target.value)}
+                    onChange={(e) =>
+                      updateDraft("session_result", e.target.value)
+                    }
                     className={inputClass}
                   >
                     <option value="">—</option>
@@ -703,7 +880,12 @@ export default function ClassDetail() {
                 <td className="px-3 py-2 align-top">
                   <button
                     onClick={handleAddReview}
-                    disabled={!selectedSession || !draft.student_id || !draft.review_date || submitting}
+                    disabled={
+                      !selectedSession ||
+                      !draft.student_id ||
+                      !draft.review_date ||
+                      submitting
+                    }
                     className="text-xs px-2.5 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-medium rounded-md whitespace-nowrap"
                   >
                     {submitting ? "..." : "Save"}
@@ -714,10 +896,16 @@ export default function ClassDetail() {
               {/* Existing reviews */}
               {reviews.map((r) => (
                 <tr key={r.id} className="border-t border-slate-100 align-top">
-                  <td className="px-3 py-2 text-slate-600">{r.day_of_week.slice(0, 3)}</td>
-                  <td className="px-3 py-2 text-slate-800 font-medium truncate">{r.student_name}</td>
+                  <td className="px-3 py-2 text-slate-600">
+                    {r.day_of_week.slice(0, 3)}
+                  </td>
+                  <td className="px-3 py-2 text-slate-800 font-medium truncate">
+                    {r.student_name}
+                  </td>
                   <td className="px-3 py-2 text-slate-600">{r.review_date}</td>
-                  <td className="px-3 py-2 text-slate-600 truncate">{r.teacher_name ?? "—"}</td>
+                  <td className="px-3 py-2 text-slate-600 truncate">
+                    {r.teacher_name ?? "—"}
+                  </td>
                   <td className="px-3 py-2 text-slate-600 whitespace-pre-wrap break-words">
                     {r.session_content || "—"}
                   </td>
@@ -754,7 +942,10 @@ export default function ClassDetail() {
 
               {reviews.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="px-3 py-4 text-center text-slate-400 text-sm">
+                  <td
+                    colSpan={8}
+                    className="px-3 py-4 text-center text-slate-400 text-sm"
+                  >
                     No reviews yet for this class.
                   </td>
                 </tr>
@@ -762,7 +953,171 @@ export default function ClassDetail() {
             </tbody>
           </table>
         </div>
-        {reviewError && <p className="text-sm text-red-600 mt-2">{reviewError}</p>}
+        {reviewError && (
+          <p className="text-sm text-red-600 mt-2">{reviewError}</p>
+        )}
+      </div>
+      {/* Roll Call */}
+      <div className="bg-white border border-slate-200 rounded-xl p-6 mt-6">
+        <h2 className="text-lg font-semibold text-slate-900 mb-1">Roll Call</h2>
+        <p className="text-xs text-slate-400 mb-4">
+          Mark attendance for a session on a specific date.
+        </p>
+
+        {classData.sessions.length === 0 ? (
+          <p className="text-sm text-slate-400">
+            Add sessions to this class first.
+          </p>
+        ) : (
+          <>
+            {/* Controls */}
+            <div className="grid grid-cols-2 gap-3 mb-5">
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">
+                  Session
+                </label>
+                <select
+                  value={rollCallSessionId}
+                  onChange={(e) => setRollCallSessionId(e.target.value)}
+                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                >
+                  {classData.sessions.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.day_of_week} · {formatTime(s.start_time)}–
+                      {formatTime(s.end_time)}
+                      {s.teacher_name ? ` · ${s.teacher_name}` : ""}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">
+                  Date
+                </label>
+                <input
+                  type="date"
+                  value={rollCallDate}
+                  onChange={(e) => setRollCallDate(e.target.value)}
+                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+            </div>
+
+            {loadingAttendance ? (
+              <p className="text-sm text-slate-400 py-4">Loading...</p>
+            ) : !rollCallSession || rollCallSession.students.length === 0 ? (
+              <p className="text-sm text-slate-400 py-4">
+                No students enrolled in this session yet.
+              </p>
+            ) : (
+              <>
+                {/* Summary */}
+                {(() => {
+                  const entries = Object.entries(attendance);
+                  const present = entries.filter(([, a]) => a.attended).length;
+                  const absent = entries.length - present;
+                  return (
+                    <div className="flex gap-3 mb-4">
+                      <span className="text-xs px-2 py-1 rounded-full bg-green-50 text-green-700 border border-green-200 font-medium">
+                        Present: {present}
+                      </span>
+                      <span className="text-xs px-2 py-1 rounded-full bg-red-50 text-red-600 border border-red-200 font-medium">
+                        Absent: {absent}
+                      </span>
+                      <span className="text-xs px-2 py-1 rounded-full bg-slate-100 text-slate-600 border border-slate-200 font-medium">
+                        Total: {entries.length}
+                      </span>
+                    </div>
+                  );
+                })()}
+
+                {/* Table */}
+                <div className="border border-slate-200 rounded-xl overflow-hidden mb-4">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="bg-slate-50 border-b border-slate-100 text-left text-xs text-slate-500 uppercase tracking-wide">
+                        <th className="px-4 py-3">Student</th>
+                        <th className="px-4 py-3">Attendance</th>
+                        <th className="px-4 py-3">Note</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {Object.entries(attendance).map(([studentId, a]) => {
+                        const student = rollCallSession.students.find(
+                          (s) => String(s.id) === studentId,
+                        );
+                        return (
+                          <tr
+                            key={studentId}
+                            className="border-b border-slate-100 last:border-0"
+                          >
+                            <td className="px-4 py-3 font-medium text-slate-800">
+                              {student?.name ?? `Student #${studentId}`}
+                            </td>
+                            <td className="px-4 py-3">
+                              <button
+                                onClick={() =>
+                                  setAttendance((prev) => ({
+                                    ...prev,
+                                    [studentId]: {
+                                      ...prev[studentId],
+                                      attended: !prev[studentId].attended,
+                                    },
+                                  }))
+                                }
+                                className={`text-xs px-3 py-1.5 rounded-full border font-medium transition-all ${
+                                  a.attended
+                                    ? "bg-green-50 text-green-700 border-green-200"
+                                    : "bg-red-50 text-red-600 border-red-200"
+                                }`}
+                              >
+                                {a.attended ? "Present" : "Absent"}
+                              </button>
+                            </td>
+                            <td className="px-4 py-3">
+                              <input
+                                type="text"
+                                value={a.note || ""}
+                                onChange={(e) =>
+                                  setAttendance((prev) => ({
+                                    ...prev,
+                                    [studentId]: {
+                                      ...prev[studentId],
+                                      note: e.target.value,
+                                    },
+                                  }))
+                                }
+                                placeholder="Optional note"
+                                className="w-full px-2 py-1 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500"
+                              />
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+
+                {attendanceError && (
+                  <p className="text-sm text-red-600 mb-2">{attendanceError}</p>
+                )}
+                {attendanceSuccess && (
+                  <p className="text-sm text-green-600 mb-2">
+                    Attendance saved.
+                  </p>
+                )}
+
+                <button
+                  onClick={handleSaveAttendance}
+                  disabled={savingAttendance}
+                  className="w-full py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-colors"
+                >
+                  {savingAttendance ? "Saving..." : "Save attendance"}
+                </button>
+              </>
+            )}
+          </>
+        )}
       </div>
     </div>
   );

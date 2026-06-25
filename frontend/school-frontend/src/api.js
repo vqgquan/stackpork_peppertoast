@@ -65,3 +65,13 @@ export const getClassReviews = (classId) => request("GET", `/classes/${classId}/
 export const deleteReview = (id) => request("DELETE", `/reviews/${id}`);
 export const markSessionMissed = (studentId, sessionId, data) => request("POST", `/students/${studentId}/sessions/${sessionId}/miss`, data);
 export const updateReview = (id, data) => request("PUT", `/reviews/${id}`, data);
+
+export const getAttendance = (params) => {
+    const query = new URLSearchParams()
+    if (params.session_id) query.append('session_id', params.session_id)
+    if (params.date_from)  query.append('date_from', params.date_from)
+    if (params.date_to)    query.append('date_to', params.date_to)
+    return request('GET', `/attendance?${query.toString()}`)
+}
+
+export const bulkUpsertAttendance = (records) => request("POST", "/attendance/bulk",records);
