@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useMemo } from "react"
 import { createClass, getTeachers } from "../api"
 
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
@@ -27,8 +27,27 @@ export default function NewClass() {
     getTeachers().then(setTeachers).catch(() => {})
   }, [])
 
+  // Only teachers who teach the class's selected subject can be assigned
+  // to one of its sessions. With no subject chosen yet, show everyone.
+  const eligibleTeachers = useMemo(() => {
+    if (!form.subject) return teachers
+    return teachers.filter(t => t.subjects?.includes(form.subject))
+  }, [teachers, form.subject])
+
   function handleChange(e) {
-    setForm(prev => ({ ...prev, [e.target.name]: e.target.value }))
+    const { name, value } = e.target
+    setForm(prev => ({ ...prev, [name]: value }))
+
+    // If the subject changes, clear any already-picked teacher that
+    // no longer teaches the newly selected subject.
+    if (name === "subject") {
+      setSessions(prev => prev.map(row => {
+        if (!row.teacher_id) return row
+        const teacher = teachers.find(t => String(t.id) === String(row.teacher_id))
+        const stillEligible = !value || teacher?.subjects?.includes(value)
+        return stillEligible ? row : { ...row, teacher_id: "" }
+      }))
+    }
   }
 
   function handleSessionChange(index, field, value) {
@@ -180,6 +199,11 @@ export default function NewClass() {
           <p className="text-xs text-slate-400 mb-3">
             A class can have multiple sessions (e.g. Monday 9–11am and Monday 11am–1pm), each with its own teacher and its own independent roster of students.
           </p>
+          {!form.subject && (
+            <p className="text-xs text-amber-600 mb-3">
+              Select a subject above to filter the teacher list to those who teach it.
+            </p>
+          )}
 
           <div className="space-y-2">
             {sessions.map((row, i) => (
@@ -210,7 +234,7 @@ export default function NewClass() {
                   className="flex-1 min-w-[140px] px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
                 >
                   <option value="">— No teacher assigned —</option>
-                  {teachers.map(t => (
+                  {eligibleTeachers.map(t => (
                     <option key={t.id} value={t.id}>{t.name}</option>
                   ))}
                 </select>

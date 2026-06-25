@@ -63,3 +63,5 @@ export const getReviews = () => request("GET", "/reviews");
 export const getReview = (id) => request("GET", `/reviews/${id}`);
 export const getClassReviews = (classId) => request("GET", `/classes/${classId}/reviews`);
 export const deleteReview = (id) => request("DELETE", `/reviews/${id}`);
+export const markSessionMissed = (studentId, sessionId, data) => request("POST", `/students/${studentId}/sessions/${sessionId}/miss`, data);
+export const updateReview = (id, data) => request("PUT", `/reviews/${id}`, data);

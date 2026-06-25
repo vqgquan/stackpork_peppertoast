@@ -8,6 +8,7 @@ import {
   getStudentReviews,
   createStudentReview,
   deleteReview,
+  markSessionMissed,
 } from "../api";
 
 const DAYS = [
@@ -61,7 +62,10 @@ function mostRecentDateFor(dayOfWeek) {
 
 function enrollmentSummary(s) {
   const parts = [];
-  if (s.total_sessions) parts.push(`${s.total_sessions} sessions`);
+  if (s.total_sessions != null) {
+    const remaining = s.remaining_sessions ?? s.total_sessions;
+    parts.push(`${remaining}/${s.total_sessions} sessions left`);
+  }
   if (s.price != null) parts.push(`${s.price.toLocaleString()}đ`);
   if (s.payment_method) parts.push(s.payment_method);
   if (s.discount) parts.push(`Discount: ${s.discount}`);
@@ -243,9 +247,18 @@ function makeEmptyReviewDraft() {
   };
 }
 
+function makeEmptyMissDraft() {
+  return {
+    step: 1, // 1 = pick class, 2 = pick date, 3 = confirm
+    session_id: "",
+    review_date: "",
+  };
+}
+
 function resultBadgeClass(result) {
   if (result === "Pass") return "bg-green-50 text-green-700";
   if (result === "Fail") return "bg-red-50 text-red-600";
+  if (result === "Unattended") return "bg-orange-50 text-orange-600";
   return "bg-slate-100 text-slate-600";
 }
 
@@ -264,6 +277,10 @@ export default function StudentDetail() {
   const [reviewDraft, setReviewDraft] = useState(makeEmptyReviewDraft());
   const [reviewError, setReviewError] = useState(null);
   const [submittingReview, setSubmittingReview] = useState(false);
+
+  const [missDraft, setMissDraft] = useState(makeEmptyMissDraft());
+  const [missSubmitting, setMissSubmitting] = useState(false);
+  const [missError, setMissError] = useState(null);
 
   function loadStudent() {
     return getStudentDetail(id).then((data) => setStudent(data));
@@ -352,6 +369,15 @@ export default function StudentDetail() {
     }
     return map;
   }, [student]);
+
+  const selectedMissSession = useMemo(() => {
+    if (!student) return null;
+    return (
+      student.sessions.find(
+        (s) => String(s.session_id) === String(missDraft.session_id),
+      ) ?? null
+    );
+  }, [student, missDraft.session_id]);
 
   function updateDraft(field, value) {
     setDraft((prev) => {
@@ -466,6 +492,7 @@ export default function StudentDetail() {
       });
       setReviewDraft(makeEmptyReviewDraft());
       await getStudentReviews(id).then(setReviews);
+      await loadStudent();
     } catch (err) {
       setReviewError(err.message);
     } finally {
@@ -478,8 +505,52 @@ export default function StudentDetail() {
     try {
       await deleteReview(reviewId);
       setReviews((prev) => prev.filter((r) => r.id !== reviewId));
+      await loadStudent();
     } catch (err) {
       alert("Error deleting review: " + err.message);
+    }
+  }
+
+  // --- Mark-missed flow: Miss Class -> Date -> Confirm ---
+  function resetMissDraft() {
+    setMissDraft(makeEmptyMissDraft());
+    setMissError(null);
+  }
+
+  function handlePickMissSession(sessionId) {
+    const session = student.sessions.find(
+      (s) => String(s.session_id) === String(sessionId),
+    );
+    setMissDraft({
+      step: 2,
+      session_id: sessionId,
+      review_date: session ? mostRecentDateFor(session.day_of_week) : "",
+    });
+  }
+
+  function handleMissDateChange(value) {
+    setMissDraft((prev) => ({ ...prev, review_date: value }));
+  }
+
+  function goToMissStep(step) {
+    setMissDraft((prev) => ({ ...prev, step }));
+  }
+
+  async function handleConfirmMiss() {
+    if (!selectedMissSession || !missDraft.review_date) return;
+    setMissSubmitting(true);
+    setMissError(null);
+    try {
+      await markSessionMissed(student.id, selectedMissSession.session_id, {
+        review_date: missDraft.review_date,
+      });
+      resetMissDraft();
+      await loadStudent();
+      await getStudentReviews(id).then(setReviews);
+    } catch (err) {
+      setMissError(err.message);
+    } finally {
+      setMissSubmitting(false);
     }
   }
 
@@ -552,7 +623,9 @@ export default function StudentDetail() {
         )}
       </div>
 
-      {/* Schedule + enrolled sessions / enroll form, side by side to use full width */}
+      {/* Schedule + (enrolled sessions / enroll form stacked above mark-missed),
+          all in one row so the mark-missed block sits below "Enrolled Sessions"
+          but stays level with the schedule. */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
         <div className="lg:col-span-2 bg-white border border-slate-200 rounded-xl p-6">
           <h2 className="text-lg font-semibold text-slate-900 mb-4">Weekly Schedule</h2>
@@ -563,200 +636,340 @@ export default function StudentDetail() {
           )}
         </div>
 
-        <div className="bg-white border border-slate-200 rounded-xl p-6">
-          <h2 className="text-lg font-semibold text-slate-900 mb-4">Enrolled Sessions</h2>
+        <div className="flex flex-col gap-6">
+          <div className="bg-white border border-slate-200 rounded-xl p-6">
+            <h2 className="text-lg font-semibold text-slate-900 mb-4">Enrolled Sessions</h2>
 
-          {student.sessions.length === 0 ? (
-            <p className="text-sm text-slate-400 mb-4">Not enrolled in any class sessions yet.</p>
-          ) : (
-            <div className="space-y-2 mb-4 max-h-[400px] overflow-y-auto pr-1">
-              {student.sessions.map((s) => (
-                <div
-                  key={s.enrollment_id}
-                  className="flex items-center justify-between border border-slate-100 rounded-lg px-3 py-2"
-                >
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <p className="text-sm font-medium text-slate-800 truncate">{s.class_name}</p>
-                      {s.subject && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-50 text-purple-700 flex-shrink-0">
-                          {s.subject}
-                        </span>
+            {student.sessions.length === 0 ? (
+              <p className="text-sm text-slate-400 mb-4">Not enrolled in any class sessions yet.</p>
+            ) : (
+              <div className="space-y-2 mb-4 max-h-[400px] overflow-y-auto pr-1">
+                {student.sessions.map((s) => (
+                  <div
+                    key={s.enrollment_id}
+                    className="flex items-center justify-between border border-slate-100 rounded-lg px-3 py-2"
+                  >
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <p className="text-sm font-medium text-slate-800 truncate">{s.class_name}</p>
+                        {s.subject && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-50 text-purple-700 flex-shrink-0">
+                            {s.subject}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs text-slate-400 truncate">
+                        {s.day_of_week.slice(0, 3)} {formatTime(s.start_time)}–{formatTime(s.end_time)}
+                        {s.teacher_name && ` · ${s.teacher_name}`}
+                      </p>
+                      {enrollmentSummary(s) && (
+                        <p className="text-xs text-slate-400 truncate">{enrollmentSummary(s)}</p>
                       )}
                     </div>
-                    <p className="text-xs text-slate-400 truncate">
-                      {s.day_of_week.slice(0, 3)} {formatTime(s.start_time)}–{formatTime(s.end_time)}
-                      {s.teacher_name && ` · ${s.teacher_name}`}
-                    </p>
-                    {enrollmentSummary(s) && (
-                      <p className="text-xs text-slate-400 truncate">{enrollmentSummary(s)}</p>
-                    )}
+                    <button
+                      onClick={() => handleUnenroll(s.enrollment_id, s.class_name)}
+                      className="text-xs text-red-400 hover:text-red-600 font-medium flex-shrink-0 ml-3"
+                    >
+                      Remove
+                    </button>
                   </div>
-                  <button
-                    onClick={() => handleUnenroll(s.enrollment_id, s.class_name)}
-                    className="text-xs text-red-400 hover:text-red-600 font-medium flex-shrink-0 ml-3"
-                  >
-                    Remove
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
+                ))}
+              </div>
+            )}
 
-          <form onSubmit={handleEnroll} className="border-t border-slate-100 pt-4">
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">
-              Enroll in a class
+            <form onSubmit={handleEnroll} className="border-t border-slate-100 pt-4">
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">
+                Enroll in a class
+              </p>
+
+              <div className="grid grid-cols-2 gap-2 mb-3">
+                <div>
+                  <label className={labelClass}>Subject</label>
+                  <select
+                    value={draft.subject}
+                    onChange={(e) => updateDraft("subject", e.target.value)}
+                    className={inputClass}
+                  >
+                    <option value="">— Select —</option>
+                    {subjects.map((s) => (
+                      <option key={s} value={s}>
+                        {s}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className={labelClass}>Class</label>
+                  <select
+                    value={draft.class_id}
+                    onChange={(e) => updateDraft("class_id", e.target.value)}
+                    disabled={!draft.subject}
+                    className={inputClass}
+                  >
+                    <option value="">— Select —</option>
+                    {classOptions.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="mb-3">
+                <label className={labelClass}>
+                  Sessions{" "}
+                  {draft.class_id && (
+                    <span className="text-slate-400 font-normal">(select one or more)</span>
+                  )}
+                </label>
+
+                {!draft.class_id ? (
+                  <p className="text-xs text-slate-400 italic px-1">Choose a class first.</p>
+                ) : sessionOptions.length === 0 ? (
+                  <p className="text-xs text-slate-400 italic px-1">
+                    No available sessions — the student may already be enrolled in all of them.
+                  </p>
+                ) : (
+                  <div className="space-y-1.5 max-h-[180px] overflow-y-auto pr-1">
+                    {sessionOptions.map((s) => {
+                      const checked = draft.session_ids.map(String).includes(String(s.id));
+                      return (
+                        <label
+                          key={s.id}
+                          className={`flex items-center gap-2 px-2.5 py-1.5 text-xs border rounded-lg cursor-pointer transition-colors ${
+                            checked
+                              ? "border-blue-400 bg-blue-50"
+                              : "border-slate-200 bg-white hover:bg-slate-50"
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => toggleSession(s.id)}
+                            className="accent-blue-600"
+                          />
+                          <span className="flex-1">
+                            {s.day_of_week.slice(0, 3)} {formatTime(s.start_time)}–{formatTime(s.end_time)}
+                          </span>
+                          <span className="text-slate-500">{s.teacher_name || "Unassigned"}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 mb-3">
+                <div>
+                  <label className={labelClass}>Total Sessions</label>
+                  <input
+                    type="number"
+                    min="1"
+                    value={draft.total_sessions}
+                    onChange={(e) => updateDraft("total_sessions", e.target.value)}
+                    placeholder="e.g. 16"
+                    className={inputClass}
+                  />
+                </div>
+                <div>
+                  <label className={labelClass}>Price</label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={draft.price}
+                    onChange={(e) => updateDraft("price", e.target.value)}
+                    placeholder="VNĐ"
+                    className={inputClass}
+                  />
+                </div>
+                <div>
+                  <label className={labelClass}>Payment Method</label>
+                  <select
+                    value={draft.payment_method}
+                    onChange={(e) => updateDraft("payment_method", e.target.value)}
+                    className={inputClass}
+                  >
+                    <option value="">— Select —</option>
+                    {PAYMENT_METHODS.map((m) => (
+                      <option key={m} value={m}>
+                        {m}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className={labelClass}>Discount</label>
+                  <input
+                    type="text"
+                    value={draft.discount}
+                    onChange={(e) => updateDraft("discount", e.target.value)}
+                    placeholder="e.g. 10% or 200,000đ"
+                    className={inputClass}
+                  />
+                </div>
+              </div>
+
+              {draft.session_ids.length > 1 && (
+                <p className="text-xs text-slate-400 mb-3 italic">
+                  Price, payment method, and discount above will apply to all {draft.session_ids.length}{" "}
+                  selected sessions.
+                </p>
+              )}
+
+              {enrollError && <p className="text-xs text-red-600 mb-2">{enrollError}</p>}
+
+              <button
+                type="submit"
+                disabled={draft.session_ids.length === 0 || enrolling}
+                className="w-full py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-colors"
+              >
+                {enrolling
+                  ? "Enrolling..."
+                  : draft.session_ids.length > 1
+                    ? `Enroll in ${draft.session_ids.length} sessions`
+                    : "Enroll"}
+              </button>
+            </form>
+          </div>
+
+          {/* Mark a session missed — Miss Class > Date > Confirm */}
+          <div className="bg-white border border-slate-200 rounded-xl p-6">
+            <h2 className="text-lg font-semibold text-slate-900 mb-1">Mark a Session Missed</h2>
+            <p className="text-xs text-slate-400 mb-4">
+              Won't count against the student's remaining sessions.
             </p>
 
-            <div className="grid grid-cols-2 gap-2 mb-3">
-              <div>
-                <label className={labelClass}>Subject</label>
-                <select
-                  value={draft.subject}
-                  onChange={(e) => updateDraft("subject", e.target.value)}
-                  className={inputClass}
-                >
-                  <option value="">— Select —</option>
-                  {subjects.map((s) => (
-                    <option key={s} value={s}>
-                      {s}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className={labelClass}>Class</label>
-                <select
-                  value={draft.class_id}
-                  onChange={(e) => updateDraft("class_id", e.target.value)}
-                  disabled={!draft.subject}
-                  className={inputClass}
-                >
-                  <option value="">— Select —</option>
-                  {classOptions.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            <div className="mb-3">
-              <label className={labelClass}>
-                Sessions{" "}
-                {draft.class_id && (
-                  <span className="text-slate-400 font-normal">(select one or more)</span>
-                )}
-              </label>
-
-              {!draft.class_id ? (
-                <p className="text-xs text-slate-400 italic px-1">Choose a class first.</p>
-              ) : sessionOptions.length === 0 ? (
-                <p className="text-xs text-slate-400 italic px-1">
-                  No available sessions — the student may already be enrolled in all of them.
-                </p>
-              ) : (
-                <div className="space-y-1.5 max-h-[180px] overflow-y-auto pr-1">
-                  {sessionOptions.map((s) => {
-                    const checked = draft.session_ids.map(String).includes(String(s.id));
+            {student.sessions.length === 0 ? (
+              <p className="text-sm text-slate-400">
+                This student isn't enrolled in any sessions yet.
+              </p>
+            ) : (
+              <>
+                {/* Step indicator */}
+                <div className="flex items-center gap-1.5 mb-4">
+                  {["Class", "Date", "Confirm"].map((label, idx) => {
+                    const stepNum = idx + 1;
+                    const active = missDraft.step === stepNum;
+                    const done = missDraft.step > stepNum;
                     return (
-                      <label
-                        key={s.id}
-                        className={`flex items-center gap-2 px-2.5 py-1.5 text-xs border rounded-lg cursor-pointer transition-colors ${
-                          checked
-                            ? "border-blue-400 bg-blue-50"
-                            : "border-slate-200 bg-white hover:bg-slate-50"
-                        }`}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={() => toggleSession(s.id)}
-                          className="accent-blue-600"
-                        />
-                        <span className="flex-1">
-                          {s.day_of_week.slice(0, 3)} {formatTime(s.start_time)}–{formatTime(s.end_time)}
+                      <div key={label} className="flex items-center gap-1.5 flex-1">
+                        <span
+                          className={`flex-shrink-0 w-5 h-5 rounded-full text-[10px] flex items-center justify-center font-semibold ${
+                            active
+                              ? "bg-amber-500 text-white"
+                              : done
+                                ? "bg-amber-100 text-amber-700"
+                                : "bg-slate-100 text-slate-400"
+                          }`}
+                        >
+                          {stepNum}
                         </span>
-                        <span className="text-slate-500">{s.teacher_name || "Unassigned"}</span>
-                      </label>
+                        <span
+                          className={`text-xs ${active ? "text-slate-800 font-medium" : "text-slate-400"}`}
+                        >
+                          {label}
+                        </span>
+                        {idx < 2 && <div className="flex-1 h-px bg-slate-100" />}
+                      </div>
                     );
                   })}
                 </div>
-              )}
-            </div>
 
-            <div className="grid grid-cols-2 gap-2 mb-3">
-              <div>
-                <label className={labelClass}>Total Sessions</label>
-                <input
-                  type="number"
-                  min="1"
-                  value={draft.total_sessions}
-                  onChange={(e) => updateDraft("total_sessions", e.target.value)}
-                  placeholder="e.g. 16"
-                  className={inputClass}
-                />
-              </div>
-              <div>
-                <label className={labelClass}>Price</label>
-                <input
-                  type="number"
-                  min="0"
-                  value={draft.price}
-                  onChange={(e) => updateDraft("price", e.target.value)}
-                  placeholder="VNĐ"
-                  className={inputClass}
-                />
-              </div>
-              <div>
-                <label className={labelClass}>Payment Method</label>
-                <select
-                  value={draft.payment_method}
-                  onChange={(e) => updateDraft("payment_method", e.target.value)}
-                  className={inputClass}
-                >
-                  <option value="">— Select —</option>
-                  {PAYMENT_METHODS.map((m) => (
-                    <option key={m} value={m}>
-                      {m}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className={labelClass}>Discount</label>
-                <input
-                  type="text"
-                  value={draft.discount}
-                  onChange={(e) => updateDraft("discount", e.target.value)}
-                  placeholder="e.g. 10% or 200,000đ"
-                  className={inputClass}
-                />
-              </div>
-            </div>
+                {/* Step 1: choose which class/session */}
+                {missDraft.step === 1 && (
+                  <div className="space-y-1.5 max-h-[260px] overflow-y-auto pr-1">
+                    {student.sessions.map((s) => (
+                      <button
+                        key={s.enrollment_id}
+                        onClick={() => handlePickMissSession(s.session_id)}
+                        className="w-full text-left px-2.5 py-2 text-xs border border-slate-200 rounded-lg hover:bg-amber-50 hover:border-amber-300 transition-colors"
+                      >
+                        <p className="font-medium text-slate-800 truncate">{s.class_name}</p>
+                        <p className="text-slate-400">
+                          {s.day_of_week.slice(0, 3)} {formatTime(s.start_time)}–{formatTime(s.end_time)}
+                          {s.teacher_name && ` · ${s.teacher_name}`}
+                        </p>
+                      </button>
+                    ))}
+                  </div>
+                )}
 
-            {draft.session_ids.length > 1 && (
-              <p className="text-xs text-slate-400 mb-3 italic">
-                Price, payment method, and discount above will apply to all {draft.session_ids.length}{" "}
-                selected sessions.
-              </p>
+                {/* Step 2: choose date */}
+                {missDraft.step === 2 && selectedMissSession && (
+                  <div>
+                    <p className="text-xs text-slate-500 mb-3">
+                      Marking{" "}
+                      <span className="font-medium text-slate-800">
+                        {selectedMissSession.class_name}
+                      </span>{" "}
+                      ({selectedMissSession.day_of_week.slice(0, 3)}{" "}
+                      {formatTime(selectedMissSession.start_time)}–
+                      {formatTime(selectedMissSession.end_time)}) as missed.
+                    </p>
+                    <label className={labelClass}>Date</label>
+                    <input
+                      type="date"
+                      value={missDraft.review_date}
+                      onChange={(e) => handleMissDateChange(e.target.value)}
+                      className={inputClass}
+                    />
+                    <div className="flex gap-2 mt-4">
+                      <button
+                        onClick={() => goToMissStep(1)}
+                        className="flex-1 py-2 text-sm font-medium rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 transition-colors"
+                      >
+                        Back
+                      </button>
+                      <button
+                        onClick={() => goToMissStep(3)}
+                        disabled={!missDraft.review_date}
+                        className="flex-1 py-2 text-sm font-medium rounded-lg bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-white transition-colors"
+                      >
+                        Continue
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Step 3: confirm */}
+                {missDraft.step === 3 && selectedMissSession && (
+                  <div>
+                    <div className="border border-amber-200 bg-amber-50 rounded-lg p-3 mb-4">
+                      <p className="text-sm text-amber-800">
+                        Mark{" "}
+                        <span className="font-semibold">{selectedMissSession.class_name}</span> on{" "}
+                        <span className="font-semibold">{missDraft.review_date}</span> as{" "}
+                        <span className="font-semibold">missed</span>?
+                      </p>
+                      <p className="text-xs text-amber-600 mt-1">
+                        This won't count against the student's remaining sessions.
+                      </p>
+                    </div>
+
+                    {missError && <p className="text-xs text-red-600 mb-2">{missError}</p>}
+
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => goToMissStep(2)}
+                        disabled={missSubmitting}
+                        className="flex-1 py-2 text-sm font-medium rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-50 transition-colors"
+                      >
+                        Back
+                      </button>
+                      <button
+                        onClick={handleConfirmMiss}
+                        disabled={missSubmitting}
+                        className="flex-1 py-2 text-sm font-medium rounded-lg bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-white transition-colors"
+                      >
+                        {missSubmitting ? "Saving..." : "Confirm"}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </>
             )}
-
-            {enrollError && <p className="text-xs text-red-600 mb-2">{enrollError}</p>}
-
-            <button
-              type="submit"
-              disabled={draft.session_ids.length === 0 || enrolling}
-              className="w-full py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-colors"
-            >
-              {enrolling
-                ? "Enrolling..."
-                : draft.session_ids.length > 1
-                  ? `Enroll in ${draft.session_ids.length} sessions`
-                  : "Enroll"}
-            </button>
-          </form>
+          </div>
         </div>
       </div>
 
