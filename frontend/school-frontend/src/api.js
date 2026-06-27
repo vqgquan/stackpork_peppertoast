@@ -1,28 +1,17 @@
-const BASE = "http://localhost:8000";
+const BASE = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
 
 async function request(method, path, body = null) {
     const options = {
         method,
-        headers: {
-            "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
     };
-
-    if (body) {
-        options.body = JSON.stringify(body);
-    }
-
+    if (body) options.body = JSON.stringify(body);
     const res = await fetch(BASE + path, options);
-
     if (!res.ok) {
         const err = await res.json().catch(() => ({}))
         throw new Error(err.detail || `HTTP error! status: ${res.status}`);
     }
-
-    if (res.status === 204) {
-        return null; // No content
-    }
-
+    if (res.status === 204) return null;
     return res.json();
 }
 
@@ -66,12 +55,35 @@ export const deleteReview = (id) => request("DELETE", `/reviews/${id}`);
 export const markSessionMissed = (studentId, sessionId, data) => request("POST", `/students/${studentId}/sessions/${sessionId}/miss`, data);
 export const updateReview = (id, data) => request("PUT", `/reviews/${id}`, data);
 
-export const getAttendance = (params) => {
+export function getAttendance(params = {}) {
     const query = new URLSearchParams()
-    if (params.session_id) query.append('session_id', params.session_id)
-    if (params.date_from)  query.append('date_from', params.date_from)
-    if (params.date_to)    query.append('date_to', params.date_to)
-    return request('GET', `/attendance?${query.toString()}`)
+    if (params.session_id != null) query.append("session_id", params.session_id)
+    if (params.student_id != null) query.append("student_id", params.student_id)
+    if (params.date_from)          query.append("date_from",  params.date_from)
+    if (params.date_to)            query.append("date_to",    params.date_to)
+    return request("GET", `/attendance?${query.toString()}`)
+}
+export const createAttendance     = (data) => request("POST",   "/attendance", data);
+export const updateAttendance     = (id, data) => request("PUT", `/attendance/${id}`, data);
+export const deleteAttendance     = (id) => request("DELETE", `/attendance/${id}`);
+export const bulkUpsertAttendance = (records) => request("POST", "/attendance/bulk", records);
+
+// Fetch a single attendance record matching student + session + date
+// using the dedicated query-param endpoint on the backend.
+// Returns the record object or null if none exists.
+export async function getAttendanceRecord(student_id, session_id, attendance_date) {
+    const query = new URLSearchParams({
+        student_id,
+        session_id,
+        attendance_date,
+    })
+    const res = await fetch(`${BASE}/attendance/record?${query.toString()}`)
+    if (!res.ok) return null
+    return res.json()  // backend returns null (JSON) if not found
 }
 
-export const bulkUpsertAttendance = (records) => request("POST", "/attendance/bulk",records);
+// Delete a single attendance record by id.
+export const deleteAttendanceRecord = (id) => request("DELETE", `/attendance/${id}`);
+
+export const getDashboardAttendance   = (month, year) => request("GET", `/dashboard/attendance?month=${month}&year=${year}`);
+export const getDashboardTeacherHours = (month, year) => request("GET", `/dashboard/teacher-hours?month=${month}&year=${year}`);

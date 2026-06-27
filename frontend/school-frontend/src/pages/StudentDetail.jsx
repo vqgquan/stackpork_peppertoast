@@ -12,13 +12,7 @@ import {
 } from "../api";
 
 const DAYS = [
-  "Monday",
-  "Tuesday",
-  "Wednesday",
-  "Thursday",
-  "Friday",
-  "Saturday",
-  "Sunday",
+  "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
 ];
 const HOUR_HEIGHT = 44;
 const TOTAL_HOURS = 24;
@@ -45,14 +39,10 @@ function hourLabel(h) {
   return `${h12}${period}`;
 }
 
-// Most recent calendar date (YYYY-MM-DD) on/before today that falls on
-// the given day-of-week. Sessions only store a recurring day-of-week,
-// not a specific date, so this is used to auto-fill "Date" once a
-// session is picked.
 function mostRecentDateFor(dayOfWeek) {
-  const targetIdx = DAYS.indexOf(dayOfWeek); // Monday = 0 ... Sunday = 6
+  const targetIdx = DAYS.indexOf(dayOfWeek);
   const today = new Date();
-  const todayIdx = (today.getDay() + 6) % 7; // JS Sun=0 -> Monday=0
+  const todayIdx = (today.getDay() + 6) % 7;
   let diff = todayIdx - targetIdx;
   if (diff < 0) diff += 7;
   const result = new Date(today);
@@ -60,27 +50,24 @@ function mostRecentDateFor(dayOfWeek) {
   return result.toISOString().slice(0, 10);
 }
 
-function enrollmentSummary(s) {
+// Enrollment summary for a grouped card (total/remaining across all slots)
+function enrollmentSummary(group) {
   const parts = [];
-  if (s.total_sessions != null) {
-    const remaining = s.remaining_sessions ?? s.total_sessions;
-    parts.push(`${remaining}/${s.total_sessions} sessions left`);
+  if (group.total_sessions != null) {
+    const remaining = group.remaining_sessions ?? group.total_sessions;
+    parts.push(`${remaining}/${group.total_sessions} sessions left`);
   }
-  if (s.price != null) parts.push(`${s.price.toLocaleString()}đ`);
-  if (s.payment_method) parts.push(s.payment_method);
-  if (s.discount) parts.push(`Discount: ${s.discount}`);
+  if (group.price != null) parts.push(`${group.price.toLocaleString()}đ`);
+  if (group.payment_method) parts.push(group.payment_method);
+  if (group.discount) parts.push(`Discount: ${group.discount}`);
   return parts.join(" · ");
 }
 
-// Groups overlapping events into clusters, then assigns each event a
-// "track" (column) within its cluster so overlapping sessions render
-// side-by-side instead of on top of each other.
 function layoutDayEvents(events) {
   const sorted = [...events].sort((a, b) => a.startMin - b.startMin);
   const clusters = [];
   let current = [];
   let currentEnd = -Infinity;
-
   for (const e of sorted) {
     if (current.length === 0 || e.startMin < currentEnd) {
       current.push(e);
@@ -92,19 +79,14 @@ function layoutDayEvents(events) {
     }
   }
   if (current.length) clusters.push(current);
-
   const result = [];
   for (const cluster of clusters) {
     const trackEnds = [];
     const clusterPositioned = [];
     for (const e of cluster) {
       let track = trackEnds.findIndex((end) => end <= e.startMin);
-      if (track === -1) {
-        track = trackEnds.length;
-        trackEnds.push(e.endMin);
-      } else {
-        trackEnds[track] = e.endMin;
-      }
+      if (track === -1) { track = trackEnds.length; trackEnds.push(e.endMin); }
+      else trackEnds[track] = e.endMin;
       clusterPositioned.push({ ...e, track });
     }
     const trackCount = trackEnds.length;
@@ -115,16 +97,12 @@ function layoutDayEvents(events) {
 
 function WeeklyTimetable({ sessions }) {
   const scrollRef = useRef(null);
-
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = 7 * HOUR_HEIGHT - 16;
-    }
+    if (scrollRef.current) scrollRef.current.scrollTop = 7 * HOUR_HEIGHT - 16;
   }, []);
 
   const eventsByDay = {};
   DAYS.forEach((d) => (eventsByDay[d] = []));
-
   sessions.forEach((s) => {
     const startMin = toMinutes(s.start_time);
     const endMin = toMinutes(s.end_time);
@@ -150,31 +128,21 @@ function WeeklyTimetable({ sessions }) {
         <div className="flex sticky top-0 z-20 bg-white border-b border-slate-200">
           <div style={{ width: GUTTER_WIDTH }} className="flex-shrink-0 bg-white" />
           {DAYS.map((day) => (
-            <div
-              key={day}
-              className="flex-1 text-center text-xs font-semibold text-slate-600 py-2 border-l border-slate-100 first:border-l-0 bg-white"
-            >
+            <div key={day} className="flex-1 text-center text-xs font-semibold text-slate-600 py-2 border-l border-slate-100 first:border-l-0 bg-white">
               {day.slice(0, 3)}
             </div>
           ))}
         </div>
-
         <div className="flex">
           <div style={{ width: GUTTER_WIDTH, height: totalHeight }} className="relative flex-shrink-0">
             {Array.from({ length: TOTAL_HOURS }).map((_, h) => (
-              <div
-                key={h}
-                className="absolute right-1.5 text-[10px] text-slate-400"
-                style={{ top: h * HOUR_HEIGHT + 2 }}
-              >
+              <div key={h} className="absolute right-1.5 text-[10px] text-slate-400" style={{ top: h * HOUR_HEIGHT + 2 }}>
                 {hourLabel(h)}
               </div>
             ))}
           </div>
-
           <div className="relative flex-1" style={{ height: totalHeight }}>
             <div className="absolute inset-0 pointer-events-none" style={{ backgroundImage: hourLineGradient }} />
-
             <div className="absolute inset-0 grid grid-cols-7">
               {DAYS.map((day) => (
                 <div key={day} className="relative border-l border-slate-100 first:border-l-0">
@@ -187,25 +155,12 @@ function WeeklyTimetable({ sessions }) {
                       <div
                         key={e.id}
                         className="absolute bg-blue-100 border border-blue-300 rounded-md px-1.5 py-1 overflow-hidden hover:z-10 hover:shadow-md transition-shadow"
-                        style={{
-                          top,
-                          height,
-                          left: `calc(${leftPct}% + 2px)`,
-                          width: `calc(${widthPct}% - 4px)`,
-                        }}
+                        style={{ top, height, left: `calc(${leftPct}% + 2px)`, width: `calc(${widthPct}% - 4px)` }}
                         title={`${e.class_name} · ${formatTime(e.start_time)} – ${formatTime(e.end_time)}${e.teacher_name ? ` · ${e.teacher_name}` : ""}`}
                       >
-                        <p className="text-[11px] font-medium text-blue-800 truncate leading-tight">
-                          {e.class_name}
-                        </p>
-                        <p className="text-[10px] text-blue-500 truncate leading-tight">
-                          {formatTime(e.start_time)} – {formatTime(e.end_time)}
-                        </p>
-                        {e.teacher_name && (
-                          <p className="text-[10px] text-blue-400 truncate leading-tight">
-                            {e.teacher_name}
-                          </p>
-                        )}
+                        <p className="text-[11px] font-medium text-blue-800 truncate leading-tight">{e.class_name}</p>
+                        <p className="text-[10px] text-blue-500 truncate leading-tight">{formatTime(e.start_time)} – {formatTime(e.end_time)}</p>
+                        {e.teacher_name && <p className="text-[10px] text-blue-400 truncate leading-tight">{e.teacher_name}</p>}
                       </div>
                     );
                   })}
@@ -219,40 +174,19 @@ function WeeklyTimetable({ sessions }) {
   );
 }
 
-const inputClass =
-  "w-full px-2 py-1.5 text-sm border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white";
+const inputClass = "w-full px-2 py-1.5 text-sm border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white";
 const labelClass = "block text-xs font-medium text-slate-600 mb-1";
 
 function makeEmptyEnrollDraft() {
-  return {
-    subject: "",
-    class_id: "",
-    session_ids: [],
-    total_sessions: "",
-    price: "",
-    payment_method: "",
-    discount: "",
-  };
+  return { subject: "", class_id: "", session_ids: [], total_sessions: "", price: "", payment_method: "", discount: "" };
 }
 
 function makeEmptyReviewDraft() {
-  return {
-    subject: "",
-    class_id: "",
-    session_id: "",
-    review_date: "",
-    session_content: "",
-    review_text: "",
-    session_result: "",
-  };
+  return { subject: "", class_id: "", session_id: "", review_date: "", session_content: "", review_text: "", session_result: "" };
 }
 
 function makeEmptyMissDraft() {
-  return {
-    step: 1, // 1 = pick class, 2 = pick date, 3 = confirm
-    session_id: "",
-    review_date: "",
-  };
+  return { step: 1, session_id: "", review_date: "" };
 }
 
 function resultBadgeClass(result) {
@@ -298,29 +232,21 @@ export default function StudentDetail() {
       .finally(() => setLoading(false));
   }, [id]);
 
-  const activeClasses = useMemo(
-    () => allClasses.filter((c) => c.status === "Active"),
-    [allClasses],
-  );
+  const activeClasses = useMemo(() => allClasses.filter((c) => c.status === "Active"), [allClasses]);
 
+  // All session_ids this student is currently enrolled in (across all enrollments)
   const enrolledSessionIds = useMemo(
     () => new Set(student ? student.sessions.map((s) => s.session_id) : []),
     [student],
   );
 
-  // Unique list of subjects across all active classes (classes with no
-  // subject set are grouped under "Other"). Used by the enroll form.
   const subjects = useMemo(() => {
-    const set = new Set(
-      activeClasses.map((c) => c.subject || NO_SUBJECT_LABEL),
-    );
+    const set = new Set(activeClasses.map((c) => c.subject || NO_SUBJECT_LABEL));
     return Array.from(set).sort();
   }, [activeClasses]);
 
   function classesForSubject(subject) {
-    return activeClasses.filter(
-      (c) => (c.subject || NO_SUBJECT_LABEL) === subject,
-    );
+    return activeClasses.filter((c) => (c.subject || NO_SUBJECT_LABEL) === subject);
   }
 
   function sessionsForClass(classId) {
@@ -329,13 +255,10 @@ export default function StudentDetail() {
     return cls.sessions.filter((s) => !enrolledSessionIds.has(s.id));
   }
 
-  // --- Review form data, scoped to sessions this student is actually
-  // enrolled in (not all active classes) ---
+  // Review form — scoped to sessions this student is actually enrolled in
   const reviewSubjects = useMemo(() => {
     if (!student) return [];
-    const set = new Set(
-      student.sessions.map((s) => s.subject || NO_SUBJECT_LABEL),
-    );
+    const set = new Set(student.sessions.map((s) => s.subject || NO_SUBJECT_LABEL));
     return Array.from(set).sort();
   }, [student]);
 
@@ -355,41 +278,57 @@ export default function StudentDetail() {
 
   const selectedReviewSession = useMemo(() => {
     if (!student) return null;
-    return (
-      student.sessions.find(
-        (s) => String(s.session_id) === String(reviewDraft.session_id),
-      ) ?? null
-    );
+    return student.sessions.find((s) => String(s.session_id) === String(reviewDraft.session_id)) ?? null;
   }, [student, reviewDraft.session_id]);
 
   const sessionLookup = useMemo(() => {
     const map = new Map();
-    if (student) {
-      student.sessions.forEach((s) => map.set(String(s.session_id), s));
-    }
+    if (student) student.sessions.forEach((s) => map.set(String(s.session_id), s));
     return map;
   }, [student]);
 
   const selectedMissSession = useMemo(() => {
     if (!student) return null;
-    return (
-      student.sessions.find(
-        (s) => String(s.session_id) === String(missDraft.session_id),
-      ) ?? null
-    );
+    return student.sessions.find((s) => String(s.session_id) === String(missDraft.session_id)) ?? null;
   }, [student, missDraft.session_id]);
+
+  // Group student.sessions by enrollment_id for the enrolled sessions card UI
+  const enrollmentGroups = useMemo(() => {
+    if (!student) return [];
+    const map = new Map();
+    for (const s of student.sessions) {
+      if (!map.has(s.enrollment_id)) {
+        map.set(s.enrollment_id, {
+          enrollment_id: s.enrollment_id,
+          class_id: s.class_id,
+          class_name: s.class_name,
+          subject: s.subject,
+          total_sessions: s.total_sessions,
+          remaining_sessions: s.remaining_sessions,
+          price: s.price,
+          payment_method: s.payment_method,
+          discount: s.discount,
+          slots: [],
+        });
+      }
+      map.get(s.enrollment_id).slots.push(s);
+    }
+    // Sort slots within each group by day then time
+    for (const group of map.values()) {
+      group.slots.sort(
+        (a, b) =>
+          DAYS.indexOf(a.day_of_week) - DAYS.indexOf(b.day_of_week) ||
+          a.start_time.localeCompare(b.start_time),
+      );
+    }
+    return Array.from(map.values());
+  }, [student]);
 
   function updateDraft(field, value) {
     setDraft((prev) => {
       const updated = { ...prev, [field]: value };
-      // Cascading resets: changing subject clears class & sessions,
-      // changing class clears the selected sessions.
-      if (field === "subject") {
-        updated.class_id = "";
-        updated.session_ids = [];
-      } else if (field === "class_id") {
-        updated.session_ids = [];
-      }
+      if (field === "subject") { updated.class_id = ""; updated.session_ids = []; }
+      else if (field === "class_id") { updated.session_ids = []; }
       return updated;
     });
   }
@@ -412,29 +351,17 @@ export default function StudentDetail() {
     setEnrollError(null);
     try {
       const today = new Date().toISOString().slice(0, 10);
-      let failures = 0;
-      for (const sessionId of draft.session_ids) {
-        try {
-          await createEnrollment({
-            student_id: Number(id),
-            session_id: Number(sessionId),
-            enrolled_date: today,
-            status: "Enrolled",
-            total_sessions:
-              draft.total_sessions !== "" ? Number(draft.total_sessions) : null,
-            price: draft.price !== "" ? Number(draft.price) : null,
-            payment_method: draft.payment_method || null,
-            discount: draft.discount || null,
-          });
-        } catch (err) {
-          failures += 1;
-        }
-      }
-      if (failures > 0) {
-        setEnrollError(
-          `${failures} of ${draft.session_ids.length} enrollment(s) failed. The rest were added successfully.`,
-        );
-      }
+      // One enrollment covering all selected sessions as a shared pool
+      await createEnrollment({
+        student_id: Number(id),
+        session_ids: draft.session_ids.map(Number),
+        enrolled_date: today,
+        status: "Enrolled",
+        total_sessions: draft.total_sessions !== "" ? Number(draft.total_sessions) : null,
+        price: draft.price !== "" ? Number(draft.price) : null,
+        payment_method: draft.payment_method || null,
+        discount: draft.discount || null,
+      });
       setDraft(makeEmptyEnrollDraft());
       await loadStudent();
     } catch (err) {
@@ -454,21 +381,13 @@ export default function StudentDetail() {
     }
   }
 
-  // --- Review form handlers ---
   function updateReviewDraft(field, value) {
     setReviewDraft((prev) => {
       const updated = { ...prev, [field]: value };
-      if (field === "subject") {
-        updated.class_id = "";
-        updated.session_id = "";
-        updated.review_date = "";
-      } else if (field === "class_id") {
-        updated.session_id = "";
-        updated.review_date = "";
-      } else if (field === "session_id") {
-        const session = student.sessions.find(
-          (s) => String(s.session_id) === String(value),
-        );
+      if (field === "subject") { updated.class_id = ""; updated.session_id = ""; updated.review_date = ""; }
+      else if (field === "class_id") { updated.session_id = ""; updated.review_date = ""; }
+      else if (field === "session_id") {
+        const session = student.sessions.find((s) => String(s.session_id) === String(value));
         updated.review_date = session ? mostRecentDateFor(session.day_of_week) : "";
       }
       return updated;
@@ -511,39 +430,22 @@ export default function StudentDetail() {
     }
   }
 
-  // --- Mark-missed flow: Miss Class -> Date -> Confirm ---
-  function resetMissDraft() {
-    setMissDraft(makeEmptyMissDraft());
-    setMissError(null);
-  }
+  function resetMissDraft() { setMissDraft(makeEmptyMissDraft()); setMissError(null); }
 
   function handlePickMissSession(sessionId) {
-    const session = student.sessions.find(
-      (s) => String(s.session_id) === String(sessionId),
-    );
-    setMissDraft({
-      step: 2,
-      session_id: sessionId,
-      review_date: session ? mostRecentDateFor(session.day_of_week) : "",
-    });
+    const session = student.sessions.find((s) => String(s.session_id) === String(sessionId));
+    setMissDraft({ step: 2, session_id: sessionId, review_date: session ? mostRecentDateFor(session.day_of_week) : "" });
   }
 
-  function handleMissDateChange(value) {
-    setMissDraft((prev) => ({ ...prev, review_date: value }));
-  }
-
-  function goToMissStep(step) {
-    setMissDraft((prev) => ({ ...prev, step }));
-  }
+  function handleMissDateChange(value) { setMissDraft((prev) => ({ ...prev, review_date: value })); }
+  function goToMissStep(step) { setMissDraft((prev) => ({ ...prev, step })); }
 
   async function handleConfirmMiss() {
     if (!selectedMissSession || !missDraft.review_date) return;
     setMissSubmitting(true);
     setMissError(null);
     try {
-      await markSessionMissed(student.id, selectedMissSession.session_id, {
-        review_date: missDraft.review_date,
-      });
+      await markSessionMissed(student.id, selectedMissSession.session_id, { review_date: missDraft.review_date });
       resetMissDraft();
       await loadStudent();
       await getStudentReviews(id).then(setReviews);
@@ -560,13 +462,8 @@ export default function StudentDetail() {
 
   const classOptions = draft.subject ? classesForSubject(draft.subject) : [];
   const sessionOptions = draft.class_id ? sessionsForClass(draft.class_id) : [];
-
-  const reviewClassOptions = reviewDraft.subject
-    ? reviewClassesForSubject(reviewDraft.subject)
-    : [];
-  const reviewSessionOptions = reviewDraft.class_id
-    ? reviewSessionsForClass(reviewDraft.class_id)
-    : [];
+  const reviewClassOptions = reviewDraft.subject ? reviewClassesForSubject(reviewDraft.subject) : [];
+  const reviewSessionOptions = reviewDraft.class_id ? reviewSessionsForClass(reviewDraft.class_id) : [];
 
   return (
     <div className="p-8 w-full">
@@ -580,13 +477,7 @@ export default function StudentDetail() {
           <div>
             <h1 className="text-2xl font-semibold text-slate-900">{student.name}</h1>
             {student.gender && (
-              <span
-                className={`inline-block mt-1 text-xs px-2 py-0.5 rounded-full font-medium ${
-                  student.gender === "Male"
-                    ? "bg-blue-50 text-blue-700"
-                    : "bg-pink-50 text-pink-700"
-                }`}
-              >
+              <span className={`inline-block mt-1 text-xs px-2 py-0.5 rounded-full font-medium ${student.gender === "Male" ? "bg-blue-50 text-blue-700" : "bg-pink-50 text-pink-700"}`}>
                 {student.gender}
               </span>
             )}
@@ -602,19 +493,15 @@ export default function StudentDetail() {
             </span>
           )}
         </div>
-
         <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mt-6 text-sm">
           <Info label="Phone" value={student.phone} />
           <Info label="Email" value={student.email} />
           <Info label="Date of Birth" value={student.date_of_birth} />
           <Info label="Address" value={student.address} className="col-span-2" />
         </div>
-
         {(student.parent_name || student.parent_phone) && (
           <div className="mt-5 pt-5 border-t border-slate-100">
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">
-              Parent / Guardian
-            </p>
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">Parent / Guardian</p>
             <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
               <Info label="Name" value={student.parent_name} />
               <Info label="Phone" value={student.parent_phone} />
@@ -623,9 +510,6 @@ export default function StudentDetail() {
         )}
       </div>
 
-      {/* Schedule + (enrolled sessions / enroll form stacked above mark-missed),
-          all in one row so the mark-missed block sits below "Enrolled Sessions"
-          but stays level with the schedule. */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
         <div className="lg:col-span-2 bg-white border border-slate-200 rounded-xl p-6">
           <h2 className="text-lg font-semibold text-slate-900 mb-4">Weekly Schedule</h2>
@@ -637,46 +521,50 @@ export default function StudentDetail() {
         </div>
 
         <div className="flex flex-col gap-6">
+          {/* Enrolled Sessions */}
           <div className="bg-white border border-slate-200 rounded-xl p-6">
             <h2 className="text-lg font-semibold text-slate-900 mb-4">Enrolled Sessions</h2>
 
-            {student.sessions.length === 0 ? (
+            {enrollmentGroups.length === 0 ? (
               <p className="text-sm text-slate-400 mb-4">Not enrolled in any class sessions yet.</p>
             ) : (
               <div className="space-y-2 mb-4 max-h-[400px] overflow-y-auto pr-1">
-                {student.sessions.map((s) => (
-                  <div
-                    key={s.enrollment_id}
-                    className="flex items-center justify-between border border-slate-100 rounded-lg px-3 py-2"
-                  >
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        <p className="text-sm font-medium text-slate-800 truncate">{s.class_name}</p>
-                        {s.subject && (
-                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-50 text-purple-700 flex-shrink-0">
-                            {s.subject}
-                          </span>
+                {enrollmentGroups.map((group) => (
+                  <div key={group.enrollment_id} className="border border-slate-100 rounded-lg px-3 py-2">
+                    <div className="flex items-start justify-between">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <p className="text-sm font-medium text-slate-800 truncate">{group.class_name}</p>
+                          {group.subject && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-50 text-purple-700 flex-shrink-0">
+                              {group.subject}
+                            </span>
+                          )}
+                        </div>
+                        {/* All slots for this enrollment */}
+                        {group.slots.map((s) => (
+                          <p key={s.session_id} className="text-xs text-slate-400 truncate">
+                            {s.day_of_week.slice(0, 3)} {formatTime(s.start_time)}–{formatTime(s.end_time)}
+                            {s.teacher_name && ` · ${s.teacher_name}`}
+                          </p>
+                        ))}
+                        {enrollmentSummary(group) && (
+                          <p className="text-xs text-slate-400 mt-0.5 truncate">{enrollmentSummary(group)}</p>
                         )}
                       </div>
-                      <p className="text-xs text-slate-400 truncate">
-                        {s.day_of_week.slice(0, 3)} {formatTime(s.start_time)}–{formatTime(s.end_time)}
-                        {s.teacher_name && ` · ${s.teacher_name}`}
-                      </p>
-                      {enrollmentSummary(s) && (
-                        <p className="text-xs text-slate-400 truncate">{enrollmentSummary(s)}</p>
-                      )}
+                      <button
+                        onClick={() => handleUnenroll(group.enrollment_id, group.class_name)}
+                        className="text-xs text-red-400 hover:text-red-600 font-medium flex-shrink-0 ml-3"
+                      >
+                        Remove
+                      </button>
                     </div>
-                    <button
-                      onClick={() => handleUnenroll(s.enrollment_id, s.class_name)}
-                      className="text-xs text-red-400 hover:text-red-600 font-medium flex-shrink-0 ml-3"
-                    >
-                      Remove
-                    </button>
                   </div>
                 ))}
               </div>
             )}
 
+            {/* Enroll form */}
             <form onSubmit={handleEnroll} className="border-t border-slate-100 pt-4">
               <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">
                 Enroll in a class
@@ -685,33 +573,16 @@ export default function StudentDetail() {
               <div className="grid grid-cols-2 gap-2 mb-3">
                 <div>
                   <label className={labelClass}>Subject</label>
-                  <select
-                    value={draft.subject}
-                    onChange={(e) => updateDraft("subject", e.target.value)}
-                    className={inputClass}
-                  >
+                  <select value={draft.subject} onChange={(e) => updateDraft("subject", e.target.value)} className={inputClass}>
                     <option value="">— Select —</option>
-                    {subjects.map((s) => (
-                      <option key={s} value={s}>
-                        {s}
-                      </option>
-                    ))}
+                    {subjects.map((s) => <option key={s} value={s}>{s}</option>)}
                   </select>
                 </div>
                 <div>
                   <label className={labelClass}>Class</label>
-                  <select
-                    value={draft.class_id}
-                    onChange={(e) => updateDraft("class_id", e.target.value)}
-                    disabled={!draft.subject}
-                    className={inputClass}
-                  >
+                  <select value={draft.class_id} onChange={(e) => updateDraft("class_id", e.target.value)} disabled={!draft.subject} className={inputClass}>
                     <option value="">— Select —</option>
-                    {classOptions.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.name}
-                      </option>
-                    ))}
+                    {classOptions.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                   </select>
                 </div>
               </div>
@@ -720,38 +591,21 @@ export default function StudentDetail() {
                 <label className={labelClass}>
                   Sessions{" "}
                   {draft.class_id && (
-                    <span className="text-slate-400 font-normal">(select one or more)</span>
+                    <span className="text-slate-400 font-normal">(select one or more — shared pool)</span>
                   )}
                 </label>
-
                 {!draft.class_id ? (
                   <p className="text-xs text-slate-400 italic px-1">Choose a class first.</p>
                 ) : sessionOptions.length === 0 ? (
-                  <p className="text-xs text-slate-400 italic px-1">
-                    No available sessions — the student may already be enrolled in all of them.
-                  </p>
+                  <p className="text-xs text-slate-400 italic px-1">No available sessions — the student may already be enrolled in all of them.</p>
                 ) : (
                   <div className="space-y-1.5 max-h-[180px] overflow-y-auto pr-1">
                     {sessionOptions.map((s) => {
                       const checked = draft.session_ids.map(String).includes(String(s.id));
                       return (
-                        <label
-                          key={s.id}
-                          className={`flex items-center gap-2 px-2.5 py-1.5 text-xs border rounded-lg cursor-pointer transition-colors ${
-                            checked
-                              ? "border-blue-400 bg-blue-50"
-                              : "border-slate-200 bg-white hover:bg-slate-50"
-                          }`}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={() => toggleSession(s.id)}
-                            className="accent-blue-600"
-                          />
-                          <span className="flex-1">
-                            {s.day_of_week.slice(0, 3)} {formatTime(s.start_time)}–{formatTime(s.end_time)}
-                          </span>
+                        <label key={s.id} className={`flex items-center gap-2 px-2.5 py-1.5 text-xs border rounded-lg cursor-pointer transition-colors ${checked ? "border-blue-400 bg-blue-50" : "border-slate-200 bg-white hover:bg-slate-50"}`}>
+                          <input type="checkbox" checked={checked} onChange={() => toggleSession(s.id)} className="accent-blue-600" />
+                          <span className="flex-1">{s.day_of_week.slice(0, 3)} {formatTime(s.start_time)}–{formatTime(s.end_time)}</span>
                           <span className="text-slate-500">{s.teacher_name || "Unassigned"}</span>
                         </label>
                       );
@@ -763,57 +617,31 @@ export default function StudentDetail() {
               <div className="grid grid-cols-2 gap-2 mb-3">
                 <div>
                   <label className={labelClass}>Total Sessions</label>
-                  <input
-                    type="number"
-                    min="1"
-                    value={draft.total_sessions}
-                    onChange={(e) => updateDraft("total_sessions", e.target.value)}
-                    placeholder="e.g. 16"
-                    className={inputClass}
-                  />
+                  <input type="number" min="1" value={draft.total_sessions} onChange={(e) => updateDraft("total_sessions", e.target.value)} placeholder="e.g. 6" className={inputClass} />
                 </div>
                 <div>
                   <label className={labelClass}>Price</label>
-                  <input
-                    type="number"
-                    min="0"
-                    value={draft.price}
-                    onChange={(e) => updateDraft("price", e.target.value)}
-                    placeholder="VNĐ"
-                    className={inputClass}
-                  />
+                  <input type="number" min="0" value={draft.price} onChange={(e) => updateDraft("price", e.target.value)} placeholder="VNĐ" className={inputClass} />
                 </div>
                 <div>
                   <label className={labelClass}>Payment Method</label>
-                  <select
-                    value={draft.payment_method}
-                    onChange={(e) => updateDraft("payment_method", e.target.value)}
-                    className={inputClass}
-                  >
+                  <select value={draft.payment_method} onChange={(e) => updateDraft("payment_method", e.target.value)} className={inputClass}>
                     <option value="">— Select —</option>
-                    {PAYMENT_METHODS.map((m) => (
-                      <option key={m} value={m}>
-                        {m}
-                      </option>
-                    ))}
+                    {PAYMENT_METHODS.map((m) => <option key={m} value={m}>{m}</option>)}
                   </select>
                 </div>
                 <div>
                   <label className={labelClass}>Discount</label>
-                  <input
-                    type="text"
-                    value={draft.discount}
-                    onChange={(e) => updateDraft("discount", e.target.value)}
-                    placeholder="e.g. 10% or 200,000đ"
-                    className={inputClass}
-                  />
+                  <input type="text" value={draft.discount} onChange={(e) => updateDraft("discount", e.target.value)} placeholder="e.g. 10% or 200,000đ" className={inputClass} />
                 </div>
               </div>
 
               {draft.session_ids.length > 1 && (
                 <p className="text-xs text-slate-400 mb-3 italic">
-                  Price, payment method, and discount above will apply to all {draft.session_ids.length}{" "}
-                  selected sessions.
+                  {draft.total_sessions !== ""
+                    ? `${draft.total_sessions} sessions shared across all ${draft.session_ids.length} selected slots. `
+                    : ""}
+                  Price and payment apply to the whole pack.
                 </p>
               )}
 
@@ -824,29 +652,20 @@ export default function StudentDetail() {
                 disabled={draft.session_ids.length === 0 || enrolling}
                 className="w-full py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-colors"
               >
-                {enrolling
-                  ? "Enrolling..."
-                  : draft.session_ids.length > 1
-                    ? `Enroll in ${draft.session_ids.length} sessions`
-                    : "Enroll"}
+                {enrolling ? "Enrolling..." : draft.session_ids.length > 1 ? `Enroll in ${draft.session_ids.length} slots (shared pack)` : "Enroll"}
               </button>
             </form>
           </div>
 
-          {/* Mark a session missed — Miss Class > Date > Confirm */}
+          {/* Mark a session missed */}
           <div className="bg-white border border-slate-200 rounded-xl p-6">
             <h2 className="text-lg font-semibold text-slate-900 mb-1">Mark a Session Missed</h2>
-            <p className="text-xs text-slate-400 mb-4">
-              Won't count against the student's remaining sessions.
-            </p>
+            <p className="text-xs text-slate-400 mb-4">Won't count against the student's remaining sessions.</p>
 
             {student.sessions.length === 0 ? (
-              <p className="text-sm text-slate-400">
-                This student isn't enrolled in any sessions yet.
-              </p>
+              <p className="text-sm text-slate-400">This student isn't enrolled in any sessions yet.</p>
             ) : (
               <>
-                {/* Step indicator */}
                 <div className="flex items-center gap-1.5 mb-4">
                   {["Class", "Date", "Confirm"].map((label, idx) => {
                     const stepNum = idx + 1;
@@ -854,34 +673,21 @@ export default function StudentDetail() {
                     const done = missDraft.step > stepNum;
                     return (
                       <div key={label} className="flex items-center gap-1.5 flex-1">
-                        <span
-                          className={`flex-shrink-0 w-5 h-5 rounded-full text-[10px] flex items-center justify-center font-semibold ${
-                            active
-                              ? "bg-amber-500 text-white"
-                              : done
-                                ? "bg-amber-100 text-amber-700"
-                                : "bg-slate-100 text-slate-400"
-                          }`}
-                        >
+                        <span className={`flex-shrink-0 w-5 h-5 rounded-full text-[10px] flex items-center justify-center font-semibold ${active ? "bg-amber-500 text-white" : done ? "bg-amber-100 text-amber-700" : "bg-slate-100 text-slate-400"}`}>
                           {stepNum}
                         </span>
-                        <span
-                          className={`text-xs ${active ? "text-slate-800 font-medium" : "text-slate-400"}`}
-                        >
-                          {label}
-                        </span>
+                        <span className={`text-xs ${active ? "text-slate-800 font-medium" : "text-slate-400"}`}>{label}</span>
                         {idx < 2 && <div className="flex-1 h-px bg-slate-100" />}
                       </div>
                     );
                   })}
                 </div>
 
-                {/* Step 1: choose which class/session */}
                 {missDraft.step === 1 && (
                   <div className="space-y-1.5 max-h-[260px] overflow-y-auto pr-1">
                     {student.sessions.map((s) => (
                       <button
-                        key={s.enrollment_id}
+                        key={s.session_id}
                         onClick={() => handlePickMissSession(s.session_id)}
                         className="w-full text-left px-2.5 py-2 text-xs border border-slate-200 rounded-lg hover:bg-amber-50 hover:border-amber-300 transition-colors"
                       >
@@ -895,73 +701,34 @@ export default function StudentDetail() {
                   </div>
                 )}
 
-                {/* Step 2: choose date */}
                 {missDraft.step === 2 && selectedMissSession && (
                   <div>
                     <p className="text-xs text-slate-500 mb-3">
-                      Marking{" "}
-                      <span className="font-medium text-slate-800">
-                        {selectedMissSession.class_name}
-                      </span>{" "}
-                      ({selectedMissSession.day_of_week.slice(0, 3)}{" "}
-                      {formatTime(selectedMissSession.start_time)}–
-                      {formatTime(selectedMissSession.end_time)}) as missed.
+                      Marking <span className="font-medium text-slate-800">{selectedMissSession.class_name}</span>{" "}
+                      ({selectedMissSession.day_of_week.slice(0, 3)} {formatTime(selectedMissSession.start_time)}–{formatTime(selectedMissSession.end_time)}) as missed.
                     </p>
                     <label className={labelClass}>Date</label>
-                    <input
-                      type="date"
-                      value={missDraft.review_date}
-                      onChange={(e) => handleMissDateChange(e.target.value)}
-                      className={inputClass}
-                    />
+                    <input type="date" value={missDraft.review_date} onChange={(e) => handleMissDateChange(e.target.value)} className={inputClass} />
                     <div className="flex gap-2 mt-4">
-                      <button
-                        onClick={() => goToMissStep(1)}
-                        className="flex-1 py-2 text-sm font-medium rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 transition-colors"
-                      >
-                        Back
-                      </button>
-                      <button
-                        onClick={() => goToMissStep(3)}
-                        disabled={!missDraft.review_date}
-                        className="flex-1 py-2 text-sm font-medium rounded-lg bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-white transition-colors"
-                      >
-                        Continue
-                      </button>
+                      <button onClick={() => goToMissStep(1)} className="flex-1 py-2 text-sm font-medium rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 transition-colors">Back</button>
+                      <button onClick={() => goToMissStep(3)} disabled={!missDraft.review_date} className="flex-1 py-2 text-sm font-medium rounded-lg bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-white transition-colors">Continue</button>
                     </div>
                   </div>
                 )}
 
-                {/* Step 3: confirm */}
                 {missDraft.step === 3 && selectedMissSession && (
                   <div>
                     <div className="border border-amber-200 bg-amber-50 rounded-lg p-3 mb-4">
                       <p className="text-sm text-amber-800">
-                        Mark{" "}
-                        <span className="font-semibold">{selectedMissSession.class_name}</span> on{" "}
-                        <span className="font-semibold">{missDraft.review_date}</span> as{" "}
-                        <span className="font-semibold">missed</span>?
+                        Mark <span className="font-semibold">{selectedMissSession.class_name}</span> on{" "}
+                        <span className="font-semibold">{missDraft.review_date}</span> as <span className="font-semibold">missed</span>?
                       </p>
-                      <p className="text-xs text-amber-600 mt-1">
-                        This won't count against the student's remaining sessions.
-                      </p>
+                      <p className="text-xs text-amber-600 mt-1">This won't count against the student's remaining sessions.</p>
                     </div>
-
                     {missError && <p className="text-xs text-red-600 mb-2">{missError}</p>}
-
                     <div className="flex gap-2">
-                      <button
-                        onClick={() => goToMissStep(2)}
-                        disabled={missSubmitting}
-                        className="flex-1 py-2 text-sm font-medium rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-50 transition-colors"
-                      >
-                        Back
-                      </button>
-                      <button
-                        onClick={handleConfirmMiss}
-                        disabled={missSubmitting}
-                        className="flex-1 py-2 text-sm font-medium rounded-lg bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-white transition-colors"
-                      >
+                      <button onClick={() => goToMissStep(2)} disabled={missSubmitting} className="flex-1 py-2 text-sm font-medium rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-50 transition-colors">Back</button>
+                      <button onClick={handleConfirmMiss} disabled={missSubmitting} className="flex-1 py-2 text-sm font-medium rounded-lg bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-white transition-colors">
                         {missSubmitting ? "Saving..." : "Confirm"}
                       </button>
                     </div>
@@ -973,31 +740,21 @@ export default function StudentDetail() {
         </div>
       </div>
 
-      {/* Session reviews — read-only */}
+      {/* Session reviews */}
       <div className="bg-white border border-slate-200 rounded-xl p-6">
         <h2 className="text-lg font-semibold text-slate-900 mb-1">Session Reviews</h2>
         <p className="text-xs text-slate-400 mb-4">Feedback left by teachers for this student.</p>
-
         <div className="overflow-x-auto">
           <table className="w-full text-sm border border-slate-200 rounded-lg table-fixed">
             <colgroup>
-              <col className="w-[10%]" />
-              <col className="w-[14%]" />
-              <col className="w-[8%]" />
-              <col className="w-[9%]" />
-              <col className="w-[10%]" />
-              <col className="w-[24.5%]" />
-              <col className="w-[24.5%]" />
+              <col className="w-[10%]" /><col className="w-[14%]" /><col className="w-[8%]" />
+              <col className="w-[9%]" /><col className="w-[10%]" /><col className="w-[24.5%]" /><col className="w-[24.5%]" />
             </colgroup>
             <thead>
               <tr className="bg-slate-50 text-left text-xs text-slate-500 uppercase tracking-wide">
-                <th className="px-3 py-2">Subject</th>
-                <th className="px-3 py-2">Class</th>
-                <th className="px-3 py-2">Day</th>
-                <th className="px-3 py-2">Date</th>
-                <th className="px-3 py-2">Teacher</th>
-                <th className="px-3 py-2">Session Content</th>
-                <th className="px-3 py-2">Teacher's Review</th>
+                <th className="px-3 py-2">Subject</th><th className="px-3 py-2">Class</th><th className="px-3 py-2">Day</th>
+                <th className="px-3 py-2">Date</th><th className="px-3 py-2">Teacher</th>
+                <th className="px-3 py-2">Session Content</th><th className="px-3 py-2">Teacher's Review</th>
               </tr>
             </thead>
             <tbody>
@@ -1005,29 +762,17 @@ export default function StudentDetail() {
                 const session = sessionLookup.get(String(r.session_id));
                 return (
                   <tr key={r.id} className="border-t border-slate-100 align-top">
-                    <td className="px-3 py-2 text-slate-600 truncate">
-                      {session?.subject || "—"}
-                    </td>
-                    <td className="px-3 py-2 text-slate-800 font-medium truncate">
-                      {session?.class_name || "—"}
-                    </td>
-                    <td className="px-3 py-2 text-slate-600">
-                      {session ? session.day_of_week.slice(0, 3) : "—"}
-                    </td>
+                    <td className="px-3 py-2 text-slate-600 truncate">{session?.subject || "—"}</td>
+                    <td className="px-3 py-2 text-slate-800 font-medium truncate">{session?.class_name || "—"}</td>
+                    <td className="px-3 py-2 text-slate-600">{session ? session.day_of_week.slice(0, 3) : "—"}</td>
                     <td className="px-3 py-2 text-slate-600">{r.review_date}</td>
-                    <td className="px-3 py-2 text-slate-600 truncate">
-                      {session?.teacher_name || r.teacher_name || "Unassigned"}
-                    </td>
-                    <td className="px-3 py-2 text-slate-600 whitespace-pre-wrap break-words">
-                      {r.session_content || "—"}
-                    </td>
+                    <td className="px-3 py-2 text-slate-600 truncate">{session?.teacher_name || r.teacher_name || "Unassigned"}</td>
+                    <td className="px-3 py-2 text-slate-600 whitespace-pre-wrap break-words">{r.session_content || "—"}</td>
                     <td className="px-3 py-2 text-slate-600 whitespace-pre-wrap break-words">
                       <div className="flex items-start justify-between gap-2">
                         <span>{r.review_text || "—"}</span>
                         {r.session_result && (
-                          <span
-                            className={`flex-shrink-0 text-xs px-1.5 py-0.5 rounded-full font-medium ${resultBadgeClass(r.session_result)}`}
-                          >
+                          <span className={`flex-shrink-0 text-xs px-1.5 py-0.5 rounded-full font-medium ${resultBadgeClass(r.session_result)}`}>
                             {r.session_result}
                           </span>
                         )}
@@ -1036,13 +781,8 @@ export default function StudentDetail() {
                   </tr>
                 );
               })}
-
               {reviews.length === 0 && (
-                <tr>
-                  <td colSpan={7} className="px-3 py-4 text-center text-slate-400 text-sm">
-                    No reviews yet for this student.
-                  </td>
-                </tr>
+                <tr><td colSpan={7} className="px-3 py-4 text-center text-slate-400 text-sm">No reviews yet for this student.</td></tr>
               )}
             </tbody>
           </table>

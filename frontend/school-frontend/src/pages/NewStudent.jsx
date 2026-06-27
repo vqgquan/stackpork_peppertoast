@@ -63,8 +63,6 @@ export default function NewStudent() {
     })
   }, [])
 
-  // Unique list of subjects across all active classes (classes with no
-  // subject set are grouped under "Other").
   const subjects = useMemo(() => {
     const set = new Set(activeClasses.map(c => c.subject || NO_SUBJECT_LABEL))
     return Array.from(set).sort()
@@ -96,8 +94,6 @@ export default function NewStudent() {
       prev.map(en => {
         if (en.key !== key) return en
         const updated = { ...en, [field]: value }
-        // Cascading resets: changing subject clears class & sessions,
-        // changing class clears the selected sessions.
         if (field === "subject") {
           updated.class_id = ""
           updated.session_ids = []
@@ -138,12 +134,12 @@ export default function NewStudent() {
 
       const newStudent = await createStudent(studentPayload)
 
-      // Flatten each enrollment card into one enrollment per selected
-      // session, sharing that card's price/payment/discount details.
-      const enrollmentJobs = enrollments.flatMap(en =>
-        en.session_ids.map(sessionId => ({
+      // One enrollment per card — all selected session_ids share the same pool
+      const enrollmentJobs = enrollments
+        .filter(en => en.session_ids.length > 0)
+        .map(en => ({
           student_id: newStudent.id,
-          session_id: Number(sessionId),
+          session_ids: en.session_ids.map(Number),
           enrolled_date: en.start_date || new Date().toISOString().slice(0, 10),
           status: "Enrolled",
           total_sessions: en.total_sessions !== "" ? Number(en.total_sessions) : null,
@@ -151,13 +147,12 @@ export default function NewStudent() {
           payment_method: en.payment_method || null,
           discount: en.discount || null,
         }))
-      )
 
       let enrollFailures = 0
       for (const job of enrollmentJobs) {
         try {
           await createEnrollment(job)
-        } catch (enrollErr) {
+        } catch {
           enrollFailures += 1
         }
       }
@@ -168,7 +163,7 @@ export default function NewStudent() {
         setSuccess(
           enrollmentJobs.length === 1
             ? "✓ Student created and enrolled successfully."
-            : `✓ Student created and enrolled in ${enrollmentJobs.length} class sessions successfully.`
+            : `✓ Student created and enrolled in ${enrollmentJobs.length} class pack(s) successfully.`
         )
       } else {
         setSuccess(
@@ -343,7 +338,10 @@ export default function NewStudent() {
 
                 <div className="mb-3">
                   <label className={labelClass}>
-                    Sessions {en.class_id && <span className="text-slate-400 font-normal">(select one or more)</span>}
+                    Sessions{" "}
+                    {en.class_id && (
+                      <span className="text-slate-400 font-normal">(select one or more — they share the session pool below)</span>
+                    )}
                   </label>
 
                   {!en.class_id ? (
@@ -384,7 +382,7 @@ export default function NewStudent() {
                   <div>
                     <label className={labelClass}>Total Sessions</label>
                     <input
-                      type="number" min="1" value={en.total_sessions} placeholder="e.g. 16"
+                      type="number" min="1" value={en.total_sessions} placeholder="e.g. 6"
                       onChange={e => updateEnrollment(en.key, "total_sessions", e.target.value)}
                       className={inputClass}
                     />
@@ -428,7 +426,10 @@ export default function NewStudent() {
 
                 {en.session_ids.length > 1 && (
                   <p className="text-xs text-slate-400 mt-3 italic">
-                    Price, payment method, and discount above will apply to all {en.session_ids.length} selected sessions for this class.
+                    {en.total_sessions !== ""
+                      ? `${en.total_sessions} sessions shared across all ${en.session_ids.length} selected slots — the student can attend any combination. `
+                      : ""}
+                    Price and payment method apply to the whole pack.
                   </p>
                 )}
               </div>

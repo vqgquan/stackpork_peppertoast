@@ -124,15 +124,15 @@ class ClassSession(Base):
     valid_from = Column(Date, nullable=True)
     class_ = relationship("Class", back_populates="sessions")
     teacher = relationship("Teacher", back_populates="sessions")
-    enrollments = relationship("Enrollment", back_populates="session")
+    enrollment_sessions = relationship("EnrollmentSession", back_populates="session")
     session_reviews = relationship("SessionReview", back_populates="session")
-    attendance_records = relationship("AttendanceRecord", back_populates="session")
+    attendance_records = relationship("AttendanceRecord", back_populates="session", cascade="all, delete-orphan")
 
 class Enrollment(Base):
     __tablename__ = "enrollments"
     id = Column(Integer, primary_key=True, index=True)
     student_id = Column(Integer, ForeignKey("students.id"), nullable=False)
-    session_id = Column(Integer, ForeignKey("class_sessions.id"), nullable=False)
+    # session_id removed — sessions are now linked via enrollment_sessions join table
     enrolled_date = Column(Date, nullable=False)
     status = Column(Enum(EnrollmentStatusEnum), nullable=False, default=EnrollmentStatusEnum.enrolled)
     total_sessions = Column(Integer, nullable=True)
@@ -141,7 +141,20 @@ class Enrollment(Base):
     payment_method = Column(String, nullable=True)
     discount = Column(String, nullable=True)
     student = relationship("Student", back_populates="enrollments")
-    session = relationship("ClassSession", back_populates="enrollments")
+    enrollment_sessions = relationship("EnrollmentSession", back_populates="enrollment", cascade="all, delete-orphan")
+
+class EnrollmentSession(Base):
+    """Join table: one enrollment can cover multiple class session slots,
+    sharing a single total_sessions / remaining_sessions pool."""
+    __tablename__ = "enrollment_sessions"
+    id = Column(Integer, primary_key=True, index=True)
+    enrollment_id = Column(Integer, ForeignKey("enrollments.id", ondelete="CASCADE"), nullable=False)
+    session_id = Column(Integer, ForeignKey("class_sessions.id", ondelete="CASCADE"), nullable=False)
+    __table_args__ = (
+        UniqueConstraint("enrollment_id", "session_id", name="uq_enrollment_session"),
+    )
+    enrollment = relationship("Enrollment", back_populates="enrollment_sessions")
+    session = relationship("ClassSession", back_populates="enrollment_sessions")
 
 class SessionReview(Base):
     __tablename__ = "session_reviews"
@@ -159,7 +172,7 @@ class SessionReview(Base):
 
 class AttendanceRecord(Base):
     """One row per (student, session, date) occurrence.
-    attended=True  → student was present; burns one remaining session.
+    attended=True  → student was present; burns one from the shared enrollment pool.
     attended=False → student was absent; does NOT burn a session.
     teacher_id is denormalised here so teacher-hours reports don't need
     to join through ClassSession when the teacher may have changed."""
@@ -363,11 +376,14 @@ class ClassSessionReviewOut(BaseModel):
 def build_class_out(c: Class) -> ClassOut:
     sessions = []
     for s in c.sessions:
-        roster = [
-            SessionRosterStudentOut(id=e.student.id, name=e.student.name)
-            for e in s.enrollments
-            if e.status == EnrollmentStatusEnum.enrolled and not e.student.is_archived
-        ]
+        # Roster via enrollment_sessions join table
+        seen_students = {}
+        for es in s.enrollment_sessions:
+            enr = es.enrollment
+            if enr.status == EnrollmentStatusEnum.enrolled and not enr.student.is_archived:
+                stu = enr.student
+                seen_students[stu.id] = stu.name
+        roster = [SessionRosterStudentOut(id=sid, name=sname) for sid, sname in seen_students.items()]
         sessions.append(ClassSessionOut(
             id=s.id, day_of_week=s.day_of_week, start_time=s.start_time, end_time=s.end_time,
             teacher_id=s.teacher_id,
@@ -379,9 +395,10 @@ def build_class_out(c: Class) -> ClassOut:
         start_date=c.start_date, end_date=c.end_date, status=c.status, sessions=sessions,
     )
 
+# --- Enrollment schemas ---
 class EnrollmentCreate(BaseModel):
     student_id: int
-    session_id: int
+    session_ids: list[int]   # shared pool across all these slots
     enrolled_date: date
     status: EnrollmentStatusEnum = EnrollmentStatusEnum.enrolled
     total_sessions: Optional[int] = None
@@ -389,10 +406,32 @@ class EnrollmentCreate(BaseModel):
     payment_method: Optional[str] = None
     discount: Optional[str] = None
 
-class EnrollmentOut(EnrollmentCreate):
+class EnrollmentOut(BaseModel):
     id: int
+    student_id: int
+    session_ids: list[int]
+    enrolled_date: date
+    status: EnrollmentStatusEnum
+    total_sessions: Optional[int] = None
     remaining_sessions: Optional[int] = None
+    price: Optional[int] = None
+    payment_method: Optional[str] = None
+    discount: Optional[str] = None
     class Config: from_attributes = True
+
+def build_enrollment_out(e: Enrollment) -> EnrollmentOut:
+    return EnrollmentOut(
+        id=e.id,
+        student_id=e.student_id,
+        session_ids=[es.session_id for es in e.enrollment_sessions],
+        enrolled_date=e.enrolled_date,
+        status=e.status,
+        total_sessions=e.total_sessions,
+        remaining_sessions=e.remaining_sessions,
+        price=e.price,
+        payment_method=e.payment_method,
+        discount=e.discount,
+    )
 
 # --- Student detail schema ---
 class StudentSessionOut(BaseModel):
@@ -431,14 +470,21 @@ class TeacherDetailOut(TeacherOut):
     availability: list[TeacherAvailabilityOut] = []
 
 # --- Dashboard schemas ---
+class ScheduleSlotOut(BaseModel):
+    session_id: int
+    day_of_week: str
+    start_time: time
+    end_time: time
+
 class AttendanceRowOut(BaseModel):
-    """One row in the Student Attendance dashboard table.
-    attendance_dates is an ordered list of all dates the session has
-    occurred since enrollment; attended_dates is the subset where
-    attended=True."""
+    """One row per enrollment in the Student Attendance dashboard table.
+    A single enrollment may cover multiple session slots (shared pool).
+    date_session_map maps each occurrence date to its specific session_id
+    so the UI knows which session to write the attendance record against."""
     enrollment_id: int
     student_id: int
     student_name: str
+    # Primary session metadata (first slot chronologically) for display
     session_id: int
     class_id: int
     class_name: str
@@ -454,18 +500,20 @@ class AttendanceRowOut(BaseModel):
     discount: Optional[str]
     total_sessions: Optional[int]
     remaining_sessions: Optional[int]
-    # All occurrence dates from enrollment_date to today, ordered asc
+    # All slots in this enrollment (for schedule label)
+    schedules: list[ScheduleSlotOut]
+    # All occurrence dates across all slots, ordered asc
     occurrence_dates: list[date]
-    # Set of dates where an AttendanceRecord with attended=True exists
+    # date string -> session_id (which slot this date belongs to)
+    date_session_map: dict[str, int]
+    # Sets of dates with attendance records
     attended_dates: set[date]
-    # Set of dates where an AttendanceRecord with attended=False exists
     absent_dates: set[date]
 
     class Config:
         from_attributes = True
 
 class TeacherHoursSlotOut(BaseModel):
-    """One cell: teacher taught during this time slot on this date."""
     date: date
     start_time: time
     end_time: time
@@ -473,12 +521,10 @@ class TeacherHoursSlotOut(BaseModel):
     subject: Optional[str]
 
 class TeacherHoursRowOut(BaseModel):
-    """One row in the Teacher Hours table — one teacher."""
     teacher_id: int
     teacher_name: str
-    # All slots taught in the requested month, ordered by date then time
     slots: list[TeacherHoursSlotOut]
-    total_hours: float  # sum of (end_time - start_time) for each slot in hours
+    total_hours: float
 
 # --- Helpers ---
 def occurrence_dates_list(day_of_week, start_date: date, end_date: date) -> list[date]:
@@ -494,25 +540,35 @@ def occurrence_dates_list(day_of_week, start_date: date, end_date: date) -> list
         current += timedelta(days=7)
     return dates
 
-def get_enrollment_for(db: Session, student_id: int, session_id: int) -> Optional[Enrollment]:
-    return db.query(Enrollment).filter(
-        Enrollment.student_id == student_id,
-        Enrollment.session_id == session_id,
-    ).first()
+def find_enrollment_for_attendance(db: Session, student_id: int, session_id: int) -> Optional[Enrollment]:
+    """Find the active enrollment that covers this (student, session) pair via the join table."""
+    links = db.query(EnrollmentSession).filter(
+        EnrollmentSession.session_id == session_id,
+    ).all()
+    for link in links:
+        enr = link.enrollment
+        if enr.student_id == student_id and enr.status == EnrollmentStatusEnum.enrolled:
+            return enr
+    return None
 
-def count_attended_sessions(db: Session, student_id: int, session_id: int) -> int:
-    """Count attendance records where the student was present.
-    This is what drives remaining_sessions."""
+def count_attended_sessions(db: Session, enrollment: Enrollment) -> int:
+    """Count ALL attended records across ALL session slots in this enrollment."""
+    session_ids = [es.session_id for es in enrollment.enrollment_sessions]
+    if not session_ids:
+        return 0
     return db.query(AttendanceRecord).filter(
-        AttendanceRecord.student_id == student_id,
-        AttendanceRecord.session_id == session_id,
+        AttendanceRecord.student_id == enrollment.student_id,
+        AttendanceRecord.session_id.in_(session_ids),
         AttendanceRecord.attended == True,
     ).count()
 
-def recompute_remaining(db: Session, enrollment: Enrollment):
-    """Recompute remaining_sessions from total_sessions minus attended count."""
+def recompute_remaining(db: Session, enrollment: Optional[Enrollment]):
+    """Recompute remaining_sessions = total_sessions minus attended count
+    across all slots in the enrollment."""
+    if enrollment is None:
+        return
     if enrollment.total_sessions is not None:
-        attended = count_attended_sessions(db, enrollment.student_id, enrollment.session_id)
+        attended = count_attended_sessions(db, enrollment)
         enrollment.remaining_sessions = enrollment.total_sessions - attended
     else:
         enrollment.remaining_sessions = None
@@ -617,22 +673,33 @@ def get_student_detail(id: int, db: Session = Depends(get_db)):
     student = db.query(Student).filter(Student.id == id, Student.is_archived == False).first()
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
-    sessions = []
+    sessions_out = []
     for enrollment in student.enrollments:
         if enrollment.status != EnrollmentStatusEnum.enrolled:
             continue
-        s = enrollment.session
-        c = s.class_
-        sessions.append(StudentSessionOut(
-            enrollment_id=enrollment.id, session_id=s.id, class_id=c.id, class_name=c.name,
-            subject=c.subject, day_of_week=s.day_of_week, start_time=s.start_time, end_time=s.end_time,
-            teacher_id=s.teacher_id, teacher_name=s.teacher.name if s.teacher else None,
-            enrolled_date=enrollment.enrolled_date, total_sessions=enrollment.total_sessions,
-            remaining_sessions=enrollment.remaining_sessions, price=enrollment.price,
-            payment_method=enrollment.payment_method, discount=enrollment.discount,
-        ))
+        for es in enrollment.enrollment_sessions:
+            s = es.session
+            c = s.class_
+            sessions_out.append(StudentSessionOut(
+                enrollment_id=enrollment.id,
+                session_id=s.id,
+                class_id=c.id,
+                class_name=c.name,
+                subject=c.subject,
+                day_of_week=s.day_of_week,
+                start_time=s.start_time,
+                end_time=s.end_time,
+                teacher_id=s.teacher_id,
+                teacher_name=s.teacher.name if s.teacher else None,
+                enrolled_date=enrollment.enrolled_date,
+                total_sessions=enrollment.total_sessions,
+                remaining_sessions=enrollment.remaining_sessions,
+                price=enrollment.price,
+                payment_method=enrollment.payment_method,
+                discount=enrollment.discount,
+            ))
     result = StudentDetailOut.model_validate(student)
-    result.sessions = sessions
+    result.sessions = sessions_out
     return result
 
 @app.post("/students", response_model=StudentOut, status_code=201)
@@ -724,14 +791,14 @@ def delete_class(id: int, db: Session = Depends(get_db)):
 # --- Enrollments ---
 @app.get("/enrollments", response_model=list[EnrollmentOut])
 def get_enrollments(db: Session = Depends(get_db)):
-    return db.query(Enrollment).all()
+    return [build_enrollment_out(e) for e in db.query(Enrollment).all()]
 
 @app.get("/enrollments/{id}", response_model=EnrollmentOut)
 def get_enrollment(id: int, db: Session = Depends(get_db)):
     e = db.query(Enrollment).filter(Enrollment.id == id).first()
     if not e:
         raise HTTPException(status_code=404, detail="Enrollment not found")
-    return e
+    return build_enrollment_out(e)
 
 @app.post("/enrollments", response_model=EnrollmentOut, status_code=201)
 def create_enrollment(payload: EnrollmentCreate, db: Session = Depends(get_db)):
@@ -740,32 +807,63 @@ def create_enrollment(payload: EnrollmentCreate, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Student not found")
     if student.is_archived:
         raise HTTPException(status_code=400, detail="Cannot enroll an archived student")
-    if not db.query(ClassSession).filter(ClassSession.id == payload.session_id).first():
-        raise HTTPException(status_code=404, detail="Class session not found")
-    existing = db.query(Enrollment).filter(
-        Enrollment.student_id == payload.student_id,
-        Enrollment.session_id == payload.session_id,
-    ).first()
-    if existing:
-        raise HTTPException(status_code=400, detail="Student already enrolled in this session")
-    e = Enrollment(**payload.model_dump())
-    e.remaining_sessions = e.total_sessions
+    if not payload.session_ids:
+        raise HTTPException(status_code=400, detail="At least one session_id is required")
+    for sid in payload.session_ids:
+        if not db.query(ClassSession).filter(ClassSession.id == sid).first():
+            raise HTTPException(status_code=404, detail=f"Class session {sid} not found")
+    # Check no existing active enrollment already covers any of these sessions for this student
+    for sid in payload.session_ids:
+        conflict = (
+            db.query(EnrollmentSession)
+            .join(Enrollment)
+            .filter(
+                Enrollment.student_id == payload.student_id,
+                EnrollmentSession.session_id == sid,
+                Enrollment.status == EnrollmentStatusEnum.enrolled,
+            )
+            .first()
+        )
+        if conflict:
+            raise HTTPException(status_code=400, detail=f"Student already enrolled in session {sid}")
+    e = Enrollment(
+        student_id=payload.student_id,
+        enrolled_date=payload.enrolled_date,
+        status=payload.status,
+        total_sessions=payload.total_sessions,
+        remaining_sessions=payload.total_sessions,  # starts at full pool
+        price=payload.price,
+        payment_method=payload.payment_method,
+        discount=payload.discount,
+    )
     db.add(e)
+    db.flush()
+    for sid in payload.session_ids:
+        db.add(EnrollmentSession(enrollment_id=e.id, session_id=sid))
     db.commit()
     db.refresh(e)
-    return e
+    return build_enrollment_out(e)
 
 @app.put("/enrollments/{id}", response_model=EnrollmentOut)
 def update_enrollment(id: int, payload: EnrollmentCreate, db: Session = Depends(get_db)):
     e = db.query(Enrollment).filter(Enrollment.id == id).first()
     if not e:
         raise HTTPException(status_code=404, detail="Enrollment not found")
-    for key, value in payload.model_dump().items():
-        setattr(e, key, value)
+    e.enrolled_date = payload.enrolled_date
+    e.status = payload.status
+    e.total_sessions = payload.total_sessions
+    e.price = payload.price
+    e.payment_method = payload.payment_method
+    e.discount = payload.discount
+    # Replace session links
+    db.query(EnrollmentSession).filter(EnrollmentSession.enrollment_id == id).delete()
+    for sid in payload.session_ids:
+        db.add(EnrollmentSession(enrollment_id=id, session_id=sid))
+    db.flush()
     recompute_remaining(db, e)
     db.commit()
     db.refresh(e)
-    return e
+    return build_enrollment_out(e)
 
 @app.delete("/enrollments/{id}", status_code=204)
 def delete_enrollment(id: int, db: Session = Depends(get_db)):
@@ -889,11 +987,13 @@ def update_class_session(session_id: int, payload: ClassSessionCreate, db: Sessi
     s.teacher_id = payload.teacher_id
     db.commit()
     db.refresh(s)
-    roster = [
-        SessionRosterStudentOut(id=e.student.id, name=e.student.name)
-        for e in s.enrollments
-        if e.status == EnrollmentStatusEnum.enrolled and not e.student.is_archived
-    ]
+    seen_students = {}
+    for es in s.enrollment_sessions:
+        enr = es.enrollment
+        if enr.status == EnrollmentStatusEnum.enrolled and not enr.student.is_archived:
+            stu = enr.student
+            seen_students[stu.id] = stu.name
+    roster = [SessionRosterStudentOut(id=sid, name=sname) for sid, sname in seen_students.items()]
     return ClassSessionOut(
         id=s.id, day_of_week=s.day_of_week, start_time=s.start_time, end_time=s.end_time,
         teacher_id=s.teacher_id, teacher_name=s.teacher.name if s.teacher else None, students=roster,
@@ -911,14 +1011,13 @@ def delete_class_session(session_id: int, db: Session = Depends(get_db)):
         db.rollback()
         raise HTTPException(
             status_code=400,
-            detail="Can't delete this session — it has enrolled students or reviews attached. Remove those first.",
+            detail="Can't delete this session — it has enrolled students, reviews, or attendance records attached. Remove those first.",
         )
 
-# Legacy missed-session endpoint — kept for compatibility but no longer
-# touches remaining_sessions (attendance records do that now).
+# Legacy missed-session endpoint — kept for compatibility.
 @app.post("/students/{student_id}/sessions/{session_id}/miss", response_model=SessionReviewOut, status_code=201)
 def mark_session_missed(student_id: int, session_id: int, payload: MarkMissedRequest, db: Session = Depends(get_db)):
-    enrollment = get_enrollment_for(db, student_id, session_id)
+    enrollment = find_enrollment_for_attendance(db, student_id, session_id)
     if not enrollment:
         raise HTTPException(status_code=404, detail="Enrollment not found for this student/session")
     session = db.query(ClassSession).filter(ClassSession.id == session_id).first()
@@ -964,6 +1063,19 @@ def get_attendance(
         q = q.filter(AttendanceRecord.attendance_date <= date_to)
     return q.order_by(AttendanceRecord.attendance_date).all()
 
+@app.get("/attendance/record", response_model=Optional[AttendanceOut])
+def get_attendance_record(
+    student_id: int = Query(...),
+    session_id: int = Query(...),
+    attendance_date: date = Query(...),
+    db: Session = Depends(get_db),
+):
+    return db.query(AttendanceRecord).filter(
+        AttendanceRecord.student_id == student_id,
+        AttendanceRecord.session_id == session_id,
+        AttendanceRecord.attendance_date == attendance_date,
+    ).first()
+
 @app.post("/attendance", response_model=AttendanceOut, status_code=201)
 def create_attendance(payload: AttendanceCreate, db: Session = Depends(get_db)):
     if not db.query(Student).filter(Student.id == payload.student_id).first():
@@ -982,47 +1094,17 @@ def create_attendance(payload: AttendanceCreate, db: Session = Depends(get_db)):
     record = AttendanceRecord(**payload.model_dump())
     db.add(record)
     db.flush()
-    # Update remaining_sessions based on attended flag
-    enrollment = get_enrollment_for(db, payload.student_id, payload.session_id)
+    enrollment = find_enrollment_for_attendance(db, payload.student_id, payload.session_id)
     recompute_remaining(db, enrollment)
     db.commit()
     db.refresh(record)
     return record
 
-@app.put("/attendance/{id}", response_model=AttendanceOut)
-def update_attendance(id: int, payload: AttendanceUpdate, db: Session = Depends(get_db)):
-    record = db.query(AttendanceRecord).filter(AttendanceRecord.id == id).first()
-    if not record:
-        raise HTTPException(status_code=404, detail="Attendance record not found")
-    if payload.teacher_id is not None and not db.query(Teacher).filter(Teacher.id == payload.teacher_id).first():
-        raise HTTPException(status_code=404, detail="Teacher not found")
-    data = payload.model_dump(exclude_unset=True)
-    for key, value in data.items():
-        setattr(record, key, value)
-    enrollment = get_enrollment_for(db, record.student_id, record.session_id)
-    recompute_remaining(db, enrollment)
-    db.commit()
-    db.refresh(record)
-    return record
-
-@app.delete("/attendance/{id}", status_code=204)
-def delete_attendance(id: int, db: Session = Depends(get_db)):
-    record = db.query(AttendanceRecord).filter(AttendanceRecord.id == id).first()
-    if not record:
-        raise HTTPException(status_code=404, detail="Attendance record not found")
-    student_id = record.student_id
-    session_id = record.session_id
-    db.delete(record)
-    db.flush()
-    enrollment = get_enrollment_for(db, student_id, session_id)
-    recompute_remaining(db, enrollment)
-    db.commit()
-
-# Bulk upsert: POST a list of {student_id, session_id, date, attended}
-# Used by the dashboard attendance table for toggling cells.
+# Bulk upsert — must be declared BEFORE /attendance/{id}
 @app.post("/attendance/bulk", response_model=list[AttendanceOut])
 def bulk_upsert_attendance(records: list[AttendanceCreate], db: Session = Depends(get_db)):
     out = []
+    affected_enrollments = {}  # enrollment_id -> enrollment obj, to recompute once per enrollment
     for payload in records:
         existing = db.query(AttendanceRecord).filter(
             AttendanceRecord.student_id == payload.student_id,
@@ -1040,28 +1122,61 @@ def bulk_upsert_attendance(records: list[AttendanceCreate], db: Session = Depend
             db.add(record)
             db.flush()
             out.append(record)
-        enrollment = get_enrollment_for(db, payload.student_id, payload.session_id)
+        enrollment = find_enrollment_for_attendance(db, payload.student_id, payload.session_id)
+        if enrollment and enrollment.id not in affected_enrollments:
+            affected_enrollments[enrollment.id] = enrollment
+    for enrollment in affected_enrollments.values():
         recompute_remaining(db, enrollment)
     db.commit()
     for r in out:
         db.refresh(r)
     return out
 
+@app.put("/attendance/{id}", response_model=AttendanceOut)
+def update_attendance(id: int, payload: AttendanceUpdate, db: Session = Depends(get_db)):
+    record = db.query(AttendanceRecord).filter(AttendanceRecord.id == id).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="Attendance record not found")
+    if payload.teacher_id is not None and not db.query(Teacher).filter(Teacher.id == payload.teacher_id).first():
+        raise HTTPException(status_code=404, detail="Teacher not found")
+    data = payload.model_dump(exclude_unset=True)
+    for key, value in data.items():
+        setattr(record, key, value)
+    enrollment = find_enrollment_for_attendance(db, record.student_id, record.session_id)
+    recompute_remaining(db, enrollment)
+    db.commit()
+    db.refresh(record)
+    return record
+
+@app.delete("/attendance/{id}", status_code=204)
+def delete_attendance(id: int, db: Session = Depends(get_db)):
+    record = db.query(AttendanceRecord).filter(AttendanceRecord.id == id).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="Attendance record not found")
+    student_id = record.student_id
+    session_id = record.session_id
+    db.delete(record)
+    db.flush()
+    enrollment = find_enrollment_for_attendance(db, student_id, session_id)
+    recompute_remaining(db, enrollment)
+    db.commit()
+
 # --- Dashboard endpoints ---
+_DAY_ORDER = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
 @app.get("/dashboard/attendance", response_model=list[AttendanceRowOut])
 def dashboard_attendance(
     month: Optional[int] = Query(None, ge=1, le=12),
     year: Optional[int] = Query(None),
     db: Session = Depends(get_db),
 ):
-    """Returns one row per active enrollment, with all session occurrence
-    dates for the requested month (defaults to current month) plus the
-    set of dates where attendance was recorded."""
+    """Returns one row per active enrollment. Each enrollment may cover
+    multiple session slots; occurrence dates are merged across all slots
+    and date_session_map tells the UI which session_id to use per date."""
     today = date.today()
     y = year or today.year
     m = month or today.month
     month_start = date(y, m, 1)
-    # Last day of month
     if m == 12:
         month_end = date(y + 1, 1, 1) - timedelta(days=1)
     else:
@@ -1078,45 +1193,79 @@ def dashboard_attendance(
         student = e.student
         if student.is_archived:
             continue
-        s = e.session
-        c = s.class_
+        if not e.enrollment_sessions:
+            continue
 
-        # Occurrence dates within the requested month, gated by valid_from
-        start = max(e.enrolled_date, month_start)
-        if s.valid_from:
-            start = max(start, s.valid_from)
-        occurrences = occurrence_dates_list(s.day_of_week, start, min(month_end, today))
+        # Collect occurrence dates across all slots in this enrollment
+        occurrence_date_set = set()
+        date_session_map: dict[str, int] = {}
 
-        # Fetch attendance records for this enrollment in this month
+        for es in e.enrollment_sessions:
+            s = es.session
+            start = max(e.enrolled_date, month_start)
+            if s.valid_from:
+                start = max(start, s.valid_from)
+            for d in occurrence_dates_list(s.day_of_week, start, min(month_end, today)):
+                occurrence_date_set.add(d)
+                date_session_map[str(d)] = s.id
+
+        if not occurrence_date_set:
+            continue
+
+        # Sort slots by day-of-week then start_time for display
+        sorted_es = sorted(
+            e.enrollment_sessions,
+            key=lambda x: (
+                _DAY_ORDER.index(x.session.day_of_week.value if hasattr(x.session.day_of_week, "value") else x.session.day_of_week),
+                x.session.start_time,
+            )
+        )
+        primary_s = sorted_es[0].session
+        c = primary_s.class_
+
+        schedules = [
+            ScheduleSlotOut(
+                session_id=es.session_id,
+                day_of_week=es.session.day_of_week.value if hasattr(es.session.day_of_week, "value") else es.session.day_of_week,
+                start_time=es.session.start_time,
+                end_time=es.session.end_time,
+            )
+            for es in sorted_es
+        ]
+
+        # Attendance records for this enrollment across all its slots this month
+        all_session_ids = [es.session_id for es in e.enrollment_sessions]
         att_records = db.query(AttendanceRecord).filter(
             AttendanceRecord.student_id == e.student_id,
-            AttendanceRecord.session_id == e.session_id,
+            AttendanceRecord.session_id.in_(all_session_ids),
             AttendanceRecord.attendance_date >= month_start,
             AttendanceRecord.attendance_date <= month_end,
         ).all()
         attended_dates = {r.attendance_date for r in att_records if r.attended}
-        absent_dates = {r.attendance_date for r in att_records if not r.attended}
+        absent_dates   = {r.attendance_date for r in att_records if not r.attended}
 
         rows.append(AttendanceRowOut(
             enrollment_id=e.id,
             student_id=student.id,
             student_name=student.name,
-            session_id=s.id,
+            session_id=primary_s.id,
             class_id=c.id,
             class_name=c.name,
             subject=c.subject,
-            day_of_week=s.day_of_week.value if hasattr(s.day_of_week, "value") else s.day_of_week,
-            start_time=s.start_time,
-            end_time=s.end_time,
-            teacher_id=s.teacher_id,
-            teacher_name=s.teacher.name if s.teacher else None,
+            day_of_week=primary_s.day_of_week.value if hasattr(primary_s.day_of_week, "value") else primary_s.day_of_week,
+            start_time=primary_s.start_time,
+            end_time=primary_s.end_time,
+            teacher_id=primary_s.teacher_id,
+            teacher_name=primary_s.teacher.name if primary_s.teacher else None,
             enrolled_date=e.enrolled_date,
             price=e.price,
             payment_method=e.payment_method,
             discount=e.discount,
             total_sessions=e.total_sessions,
             remaining_sessions=e.remaining_sessions,
-            occurrence_dates=occurrences,
+            schedules=schedules,
+            occurrence_dates=sorted(occurrence_date_set),
+            date_session_map=date_session_map,
             attended_dates=attended_dates,
             absent_dates=absent_dates,
         ))
@@ -1130,11 +1279,6 @@ def dashboard_teacher_hours(
     year: Optional[int] = Query(None),
     db: Session = Depends(get_db),
 ):
-    """Returns one row per teacher that has at least one attendance
-    record in the requested month.  Each slot in the row represents
-    one (date, start_time, end_time) teaching block derived from
-    attendance records where attended=True — i.e. sessions that
-    actually ran."""
     today = date.today()
     y = year or today.year
     m = month or today.month
@@ -1144,7 +1288,6 @@ def dashboard_teacher_hours(
     else:
         month_end = date(y, m + 1, 1) - timedelta(days=1)
 
-    # All attendance records in the month where someone was present
     records = (
         db.query(AttendanceRecord)
         .filter(
@@ -1156,8 +1299,6 @@ def dashboard_teacher_hours(
         .all()
     )
 
-    # Group by teacher → deduplicate by (date, session_id) so we count
-    # each session slot once even if multiple students attended it
     from collections import defaultdict
     teacher_slots: dict[int, dict[tuple, TeacherHoursSlotOut]] = defaultdict(dict)
     teacher_names: dict[int, str] = {}
