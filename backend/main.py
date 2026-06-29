@@ -124,7 +124,7 @@ class ClassSession(Base):
     valid_from = Column(Date, nullable=True)
     class_ = relationship("Class", back_populates="sessions")
     teacher = relationship("Teacher", back_populates="sessions")
-    enrollment_sessions = relationship("EnrollmentSession", back_populates="session")
+    enrollment_sessions = relationship("EnrollmentSession", back_populates="session", cascade="all, delete-orphan")
     session_reviews = relationship("SessionReview", back_populates="session")
     attendance_records = relationship("AttendanceRecord", back_populates="session", cascade="all, delete-orphan")
 
