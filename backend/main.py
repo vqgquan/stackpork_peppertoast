@@ -89,7 +89,7 @@ class Student(Base):
     __tablename__ = "students"
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
-    phone = Column(String, nullable=False)
+    phone = Column(String, nullable=True)
     gender = Column(String, nullable=True)
     email = Column(String, nullable=True)
     address = Column(String, nullable=True)
@@ -257,7 +257,7 @@ def build_teacher_out(t: Teacher) -> TeacherOut:
 
 class StudentCreate(BaseModel):
     name: str
-    phone: str
+    phone: Optional[str] = None
     gender: Optional[str] = None
     email: Optional[EmailStr] = None
     address: Optional[str] = None

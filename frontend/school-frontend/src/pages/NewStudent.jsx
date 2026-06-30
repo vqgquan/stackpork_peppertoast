@@ -3,7 +3,7 @@ import { createStudent, createEnrollment, getClasses } from "../api"
 
 const STUDENT_FIELDS = [
   { name: "name",            label: "Full Name",       type: "text",   required: true },
-  { name: "phone",           label: "Phone Number",    type: "text",   required: true },
+  { name: "phone",           label: "Phone Number",    type: "text",   required: false },
   { name: "date_of_birth",   label: "Date of Birth",   type: "date",   required: false },
   { name: "address",         label: "Address",         type: "text",   required: false, span: 2 },
 ]
