@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react"
+import { useState, useEffect, useRef, useMemo } from "react"
 import { createClass, getTeachers } from "../api"
 
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
@@ -14,6 +14,77 @@ const EMPTY = {
 }
 
 const EMPTY_SESSION_ROW = { day_of_week: "Monday", start_time: "", end_time: "", teacher_id: "" }
+const TIME_OPTIONS = Array.from({ length: 24 * 60 }, (_, i) => {
+  const h = String(Math.floor(i / 60)).padStart(2, "0")
+  const m = String(i % 60).padStart(2, "0")
+  return `${h}:${m}`
+})
+
+function TimeSelect({ value, onChange }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef(null)
+  const [h, m] = value ? value.split(":") : ["", ""]
+
+  const hours = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, "0"))
+  const minutes = Array.from({ length: 60 }, (_, i) => String(i).padStart(2, "0"))
+
+  useEffect(() => {
+    function handleClickOutside(e) {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false)
+    }
+    document.addEventListener("mousedown", handleClickOutside)
+    return () => document.removeEventListener("mousedown", handleClickOutside)
+  }, [])
+
+  function pick(newH, newM) {
+    onChange(`${newH}:${newM}`)
+  }
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className="px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white min-w-[80px] text-left"
+      >
+        {value || "--:--"}
+      </button>
+
+      {open && (
+        <div className="absolute z-10 mt-1 flex border border-slate-200 rounded-lg bg-white shadow-lg overflow-hidden">
+          <div className="w-20 max-h-64 overflow-y-auto border-r border-slate-100">
+            {hours.map(hh => (
+              <button
+                key={hh}
+                type="button"
+                onClick={() => pick(hh, m || "00")}
+                className={`w-full px-3 py-2.5 text-base text-center hover:bg-slate-50 ${
+                  hh === h ? "bg-blue-100 font-semibold text-blue-700" : ""
+                }`}
+              >
+                {hh}
+              </button>
+            ))}
+          </div>
+          <div className="w-20 max-h-64 overflow-y-auto">
+            {minutes.map(mm => (
+              <button
+                key={mm}
+                type="button"
+                onClick={() => pick(h || "00", mm)}
+                className={`w-full px-3 py-2.5 text-base text-center hover:bg-slate-50 ${
+                  mm === m ? "bg-blue-100 font-semibold text-blue-700" : ""
+                }`}
+              >
+                {mm}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
 
 export default function NewClass() {
   const [form, setForm] = useState(EMPTY)
@@ -215,18 +286,14 @@ export default function NewClass() {
                 >
                   {DAYS.map(d => <option key={d} value={d}>{d}</option>)}
                 </select>
-                <input
-                  type="time"
+                <TimeSelect
                   value={row.start_time}
-                  onChange={e => handleSessionChange(i, "start_time", e.target.value)}
-                  className="px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                  onChange={val => handleSessionChange(i, "start_time", val)}
                 />
                 <span className="text-slate-400 text-sm">to</span>
-                <input
-                  type="time"
+                <TimeSelect
                   value={row.end_time}
-                  onChange={e => handleSessionChange(i, "end_time", e.target.value)}
-                  className="px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                  onChange={val => handleSessionChange(i, "end_time", val)}
                 />
                 <select
                   value={row.teacher_id}

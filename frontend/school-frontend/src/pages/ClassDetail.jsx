@@ -12,6 +12,7 @@ import {
   getAttendance,
   bulkUpsertAttendance,
 } from "../api";
+import TimeSelect from "../components/TimeSelect";
 
 const DAYS = [
   "Monday",
@@ -40,15 +41,11 @@ function toMinutes(t) {
 function formatTime(t) {
   if (!t) return "";
   const [h, m] = t.split(":").map(Number);
-  const period = h >= 12 ? "PM" : "AM";
-  const hour12 = h % 12 === 0 ? 12 : h % 12;
-  return `${hour12}:${String(m).padStart(2, "0")} ${period}`;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
 
 function hourLabel(h) {
-  const period = h >= 12 ? "pm" : "am";
-  const h12 = h % 12 === 0 ? 12 : h % 12;
-  return `${h12}${period}`;
+  return `${String(h).padStart(2, "0")}:00`;
 }
 
 // "09:00:00" -> "09:00" for <input type="time">
@@ -331,21 +328,19 @@ function SessionRow({ session, teachers, onSave, onDelete }) {
             </option>
           ))}
         </select>
-        <input
-          type="time"
+        <TimeSelect
           value={draft.start_time}
-          onChange={(e) =>
-            setDraft((p) => ({ ...p, start_time: e.target.value }))
+          onChange={(value) =>
+            setDraft((p) => ({ ...p, start_time: value }))
           }
-          className={inputClass}
+          className="w-full"
         />
-        <input
-          type="time"
+        <TimeSelect
           value={draft.end_time}
-          onChange={(e) =>
-            setDraft((p) => ({ ...p, end_time: e.target.value }))
+          onChange={(value) =>
+            setDraft((p) => ({ ...p, end_time: value }))
           }
-          className={inputClass}
+          className="w-full"
         />
       </div>
       {err && <p className="text-xs text-red-600">{err}</p>}
@@ -729,21 +724,19 @@ export default function ClassDetail() {
                   </option>
                 ))}
               </select>
-              <input
-                type="time"
+              <TimeSelect
                 value={newSession.start_time}
-                onChange={(e) =>
-                  setNewSession((p) => ({ ...p, start_time: e.target.value }))
+                onChange={(value) =>
+                  setNewSession((p) => ({ ...p, start_time: value }))
                 }
-                className={inputClass}
+                className="w-full"
               />
-              <input
-                type="time"
+              <TimeSelect
                 value={newSession.end_time}
-                onChange={(e) =>
-                  setNewSession((p) => ({ ...p, end_time: e.target.value }))
+                onChange={(value) =>
+                  setNewSession((p) => ({ ...p, end_time: value }))
                 }
-                className={inputClass}
+                className="w-full"
               />
             </div>
             {addSessionError && (

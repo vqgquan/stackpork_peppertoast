@@ -1,5 +1,6 @@
 import { useState } from "react"
 import { createTeacher } from "../api"
+import TimeSelect from "../components/TimeSelect"
 
 const SUBJECTS = ["Guitar", "Guitar điện", "Piano", "Organ", "Trống", "Thanh nhạc"]
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
@@ -301,18 +302,16 @@ export default function NewTeacher() {
                   >
                     {DAYS.map(d => <option key={d} value={d}>{d}</option>)}
                   </select>
-                  <input
-                    type="time"
+                  <TimeSelect
                     value={row.start_time}
-                    onChange={e => handleAvailabilityChange(i, "start_time", e.target.value)}
-                    className="px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                    onChange={value => handleAvailabilityChange(i, "start_time", value)}
+                    className="min-w-[90px]"
                   />
                   <span className="text-slate-400 text-sm">to</span>
-                  <input
-                    type="time"
+                  <TimeSelect
                     value={row.end_time}
-                    onChange={e => handleAvailabilityChange(i, "end_time", e.target.value)}
-                    className="px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                    onChange={value => handleAvailabilityChange(i, "end_time", value)}
+                    className="min-w-[90px]"
                   />
                   {hasMultipleSubjects && (
                     <select

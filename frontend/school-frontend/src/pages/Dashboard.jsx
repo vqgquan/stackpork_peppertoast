@@ -84,18 +84,14 @@ function toMinutes(t) {
 function formatTime(t) {
   if (!t) return "";
   const [h, m] = t.split(":").map(Number);
-  const period = h >= 12 ? "PM" : "AM";
-  const hour12 = h % 12 === 0 ? 12 : h % 12;
-  return `${hour12}:${String(m).padStart(2, "0")} ${period}`;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
 function formatDateVN(d) {
   const dt = d instanceof Date ? d : new Date(d);
   return `${String(dt.getDate()).padStart(2, "0")}/${String(dt.getMonth() + 1).padStart(2, "0")}/${dt.getFullYear()}`;
 }
 function hourLabel(h) {
-  const period = h >= 12 ? "pm" : "am";
-  const h12 = h % 12 === 0 ? 12 : h % 12;
-  return `${h12}${period}`;
+  return `${String(h).padStart(2, "0")}:00`;
 }
 function getWeekDates() {
   const today = new Date();
