@@ -84,21 +84,38 @@ function toMinutes(t) {
 function formatTime(t) {
   if (!t) return "";
   const [h, m] = t.split(":").map(Number);
-  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+  const period = h >= 12 ? "PM" : "AM";
+  const hour12 = h % 12 === 0 ? 12 : h % 12;
+  return `${hour12}:${String(m).padStart(2, "0")} ${period}`;
 }
 function formatDateVN(d) {
   const dt = d instanceof Date ? d : new Date(d);
   return `${String(dt.getDate()).padStart(2, "0")}/${String(dt.getMonth() + 1).padStart(2, "0")}/${dt.getFullYear()}`;
 }
 function hourLabel(h) {
-  return `${String(h).padStart(2, "0")}:00`;
+  const period = h >= 12 ? "pm" : "am";
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return `${h12}${period}`;
 }
-function getWeekDates() {
+function toISODateString(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+// Classes have optional start_date/end_date (YYYY-MM-DD). No date means
+// no bound on that side — i.e. always available from/until that end.
+function classActiveOnDate(c, dateStr) {
+  if (c.start_date && dateStr < c.start_date) return false;
+  if (c.end_date && dateStr > c.end_date) return false;
+  return true;
+}
+function getWeekDates(weekOffset = 0) {
   const today = new Date();
   const day = today.getDay();
   const diffToMonday = day === 0 ? -6 : 1 - day;
   const monday = new Date(today);
-  monday.setDate(today.getDate() + diffToMonday);
+  monday.setDate(today.getDate() + diffToMonday + weekOffset * 7);
   const dates = {};
   DAYS.forEach((d, i) => {
     const dt = new Date(monday);
@@ -1613,6 +1630,7 @@ export default function Dashboard() {
   const [selectedSession, setSelectedSession] = useState(null);
   const [selectedSubject, setSelectedSubject] = useState("");
   const [dismissedKeys, setDismissedKeys] = useState(loadDismissed);
+  const [weekOffset, setWeekOffset] = useState(0);
 
   const tableMonth = useMonthYear();
 
@@ -1755,7 +1773,7 @@ export default function Dashboard() {
   if (error) return <p className="p-8 text-red-500">{error}</p>;
 
   const teachersById = Object.fromEntries(teachers.map((t) => [t.id, t]));
-  const weekDates = getWeekDates();
+  const weekDates = getWeekDates(weekOffset);
   const visibleClasses = classes
     .filter((c) => c.status === "Active")
     .filter((c) => !selectedSubject || c.subject === selectedSubject);
@@ -1764,8 +1782,15 @@ export default function Dashboard() {
   const studentIds = new Set();
   visibleClasses.forEach((c) => {
     c.sessions.forEach((s) => {
-      s.students.forEach((stu) => studentIds.add(stu.id));
+      // Skip sessions with no enrolled students — keeps the weekly grid focused
+      // on classes that are actually running.
+      if (!s.students || s.students.length === 0) return;
       if (!eventsByDay[s.day_of_week]) return;
+      // Skip occurrences that fall outside the class's start/end date range
+      // for the week currently being viewed.
+      const occurrenceDateStr = toISODateString(weekDates[s.day_of_week]);
+      if (!classActiveOnDate(c, occurrenceDateStr)) return;
+      s.students.forEach((stu) => studentIds.add(stu.id));
       eventsByDay[s.day_of_week].push({
         id: s.id,
         class_id: c.id,
@@ -1803,7 +1828,49 @@ export default function Dashboard() {
             <h2 className="text-lg font-semibold text-slate-900">
               This Week's Schedule
             </h2>
-            <p className="text-xs text-slate-400 mt-0.5">{weekRangeLabel}</p>
+            <div className="flex items-center gap-2 mt-1">
+              <button
+                onClick={() => setWeekOffset((w) => w - 1)}
+                className="p-1 rounded-md border border-slate-200 hover:bg-slate-50 text-slate-500"
+                title="Previous week"
+              >
+                <svg
+                  className="w-3.5 h-3.5"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  viewBox="0 0 24 24"
+                >
+                  <path d="M15 18l-6-6 6-6" />
+                </svg>
+              </button>
+              <p className="text-xs text-slate-400 min-w-[150px]">
+                {weekRangeLabel}
+              </p>
+              <button
+                onClick={() => setWeekOffset((w) => w + 1)}
+                className="p-1 rounded-md border border-slate-200 hover:bg-slate-50 text-slate-500"
+                title="Next week"
+              >
+                <svg
+                  className="w-3.5 h-3.5"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  viewBox="0 0 24 24"
+                >
+                  <path d="M9 18l6-6-6-6" />
+                </svg>
+              </button>
+              {weekOffset !== 0 && (
+                <button
+                  onClick={() => setWeekOffset(0)}
+                  className="text-xs text-blue-600 hover:text-blue-700 font-medium underline ml-1"
+                >
+                  This week
+                </button>
+              )}
+            </div>
           </div>
           <div className="text-right">
             <p className="text-2xl font-semibold text-slate-900 leading-tight">
