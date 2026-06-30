@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo } from "react"
 import { useNavigate } from "react-router-dom"
-import { getStudents, deleteStudent } from "../api"
+import { getStudents, getClasses, deleteStudent } from "../api"
 import SearchBar from "../components/SearchBar"
 
 const SEARCH_FIELDS = [
@@ -13,16 +13,40 @@ const SEARCH_FIELDS = [
 export default function Students() {
   const navigate = useNavigate()
   const [students, setStudents] = useState([])
+  const [classes, setClasses] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [filters, setFilters] = useState({})
 
   useEffect(() => {
-    getStudents()
-      .then(data => setStudents(data))
+    Promise.all([getStudents(), getClasses()])
+      .then(([studentsData, classesData]) => {
+        setStudents(studentsData)
+        setClasses(classesData)
+      })
       .catch(err => setError(err.message))
       .finally(() => setLoading(false))
   }, [])
+
+  // Build student_id -> sorted list of distinct subjects, scoped to
+  // active classes with currently-enrolled students only.
+  const subjectsByStudent = useMemo(() => {
+    const map = {}
+    for (const c of classes) {
+      if (!c.subject || c.status !== "Active") continue
+      for (const session of c.sessions ?? []) {
+        for (const student of session.students ?? []) {
+          if (!map[student.id]) map[student.id] = new Set()
+          map[student.id].add(c.subject)
+        }
+      }
+    }
+    const sorted = {}
+    for (const [id, set] of Object.entries(map)) {
+      sorted[id] = [...set].sort()
+    }
+    return sorted
+  }, [classes])
 
   const filtered = useMemo(() => {
     if (Object.keys(filters).length === 0) return students
@@ -71,7 +95,7 @@ export default function Students() {
                 <th className="px-4 py-3">Parent</th>
                 <th className="px-4 py-3">Parent Phone</th>
                 <th className="px-4 py-3">Customer Group</th>
-                <th className="px-4 py-3">Source</th>
+                <th className="px-4 py-3">Subjects</th>
                 <th className="px-4 py-3"></th>
               </tr>
             </thead>
@@ -100,9 +124,15 @@ export default function Students() {
                       : "—"}
                   </td>
                   <td className="px-4 py-3">
-                    {s.customer_source
-                      ? <span className="inline-block text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">{s.customer_source}</span>
-                      : "—"}
+                    {(subjectsByStudent[s.id]?.length ?? 0) > 0 ? (
+                      <div className="flex flex-wrap gap-1">
+                        {subjectsByStudent[s.id].map(subj => (
+                          <span key={subj} className="inline-block text-xs px-2 py-0.5 rounded-full bg-purple-50 text-purple-700">
+                            {subj}
+                          </span>
+                        ))}
+                      </div>
+                    ) : "—"}
                   </td>
                   <td className="px-4 py-3 text-right">
                     <button
