@@ -16,6 +16,7 @@ const CUSTOMER_SOURCE_OPTIONS = ["Fb Ads", "Gg Map", "Vãng lai", "Tiktok", "Gi�
 const CUSTOMER_GROUP_OPTIONS = ["Đã đăng ký", "Chưa đăng ký", "Khách hàng quay lại", "Khách VIP"]
 const PAYMENT_METHODS = ["Tiền Mặt", "Chuyển khoản", "Pos"]
 const NO_SUBJECT_LABEL = "Other"
+const DAYS_OF_WEEK = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
 function formatTime(t) {
   if (!t) return ""
@@ -35,6 +36,7 @@ function makeEmptyEnrollment() {
     subject: "",
     class_id: "",
     session_ids: [],
+    dayFilter: "",
     total_sessions: "",
     start_date: "",
     price: "",
@@ -95,8 +97,10 @@ export default function NewStudent() {
         if (field === "subject") {
           updated.class_id = ""
           updated.session_ids = []
+          updated.dayFilter = ""
         } else if (field === "class_id") {
           updated.session_ids = []
+          updated.dayFilter = ""
         }
         return updated
       })
@@ -114,6 +118,16 @@ export default function NewStudent() {
           : [...en.session_ids, sessionId]
         return { ...en, session_ids }
       })
+    )
+  }
+
+  function setDayFilter(key, day) {
+    setEnrollments(prev =>
+      prev.map(en =>
+        en.key === key
+          ? { ...en, dayFilter: en.dayFilter === day ? "" : day }
+          : en
+      )
     )
   }
 
@@ -289,7 +303,13 @@ export default function NewStudent() {
         <div className="space-y-4">
           {enrollments.map((en, idx) => {
             const classOptions = en.subject ? classesForSubject(en.subject) : []
-            const sessionOptions = en.class_id ? sessionsForClass(en.class_id) : []
+            const allSessions = en.class_id ? sessionsForClass(en.class_id) : []
+            const availableDays = DAYS_OF_WEEK.filter(d =>
+              allSessions.some(s => s.day_of_week === d)
+            )
+            const sessionOptions = en.dayFilter
+              ? allSessions.filter(s => s.day_of_week === en.dayFilter)
+              : allSessions
 
             return (
               <div key={en.key} className="border border-slate-200 rounded-lg p-4 relative">
@@ -342,10 +362,34 @@ export default function NewStudent() {
                     )}
                   </label>
 
+                  {en.class_id && availableDays.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5 mb-2">
+                      {availableDays.map(day => {
+                        const active = en.dayFilter === day
+                        return (
+                          <button
+                            key={day}
+                            type="button"
+                            onClick={() => setDayFilter(en.key, day)}
+                            className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${
+                              active
+                                ? "border-blue-500 bg-blue-600 text-white"
+                                : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50"
+                            }`}
+                          >
+                            {day.slice(0, 3)}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  )}
+
                   {!en.class_id ? (
                     <p className="text-xs text-slate-400 italic px-1">Choose a class first.</p>
                   ) : sessionOptions.length === 0 ? (
-                    <p className="text-xs text-slate-400 italic px-1">This class has no sessions yet.</p>
+                    <p className="text-xs text-slate-400 italic px-1">
+                      {en.dayFilter ? `No sessions on ${en.dayFilter}.` : "This class has no sessions yet."}
+                    </p>
                   ) : (
                     <div className="space-y-1.5">
                       {sessionOptions.map(s => {
