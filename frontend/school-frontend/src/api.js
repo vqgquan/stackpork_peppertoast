@@ -45,6 +45,16 @@ export const deleteEnrollment = (id) => request("DELETE", `/enrollments/${id}`);
 export const getEnrollment = (id) => request("GET", `/enrollments/${id}`);
 export const updateEnrollment = (id, data) => request("PUT", `/enrollments/${id}`, data);
 
+// Soft-end an enrollment (student exhausted their pack and won't renew, or
+// left the class on their own). Keeps the enrollment + its history around
+// and moves it into the student's "Past Enrollments" list.
+// status defaults to "Dropped" server-side if omitted.
+export const endEnrollment = (id, data) => request("POST", `/enrollments/${id}/end`, data);
+// Undo an accidental end — puts the enrollment back on the active roster.
+export const reactivateEnrollment = (id) => request("POST", `/enrollments/${id}/reactivate`);
+// Buy more sessions for an active enrollment's shared pool. data: { additional_sessions, additional_price? }
+export const addSessionsToEnrollment = (id, data) => request("POST", `/enrollments/${id}/add-sessions`, data);
+
 export const getStudentReviews = (studentId) => request("GET", `/students/${studentId}/reviews`);
 export const createStudentReview = (studentId, data) => request("POST", `/students/${studentId}/reviews`, data);
 export const getTeacherReviews = (teacherId) => request("GET", `/teachers/${teacherId}/reviews`);

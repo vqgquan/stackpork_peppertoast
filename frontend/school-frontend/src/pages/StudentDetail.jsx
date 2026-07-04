@@ -5,10 +5,12 @@ import {
   getClasses,
   createEnrollment,
   deleteEnrollment,
+  endEnrollment,
+  reactivateEnrollment,
+  addSessionsToEnrollment,
   getStudentReviews,
   createStudentReview,
   deleteReview,
-  markSessionMissed,
 } from "../api";
 
 const DAYS = [
@@ -33,6 +35,10 @@ function formatTime(t) {
 
 function hourLabel(h) {
   return `${String(h).padStart(2, "0")}:00`;
+}
+
+function durationMinutes(s) {
+  return toMinutes(s.end_time) - toMinutes(s.start_time);
 }
 
 function mostRecentDateFor(dayOfWeek) {
@@ -181,8 +187,9 @@ function makeEmptyReviewDraft() {
   return { subject: "", class_id: "", session_id: "", review_date: "", session_content: "", review_text: "", session_result: "" };
 }
 
-function makeEmptyMissDraft() {
-  return { step: 1, session_id: "", review_date: "" };
+function pastEnrollmentStatusClass(status) {
+  if (status === "Completed") return "bg-blue-50 text-blue-700";
+  return "bg-slate-100 text-slate-600"; // Dropped
 }
 
 function resultBadgeClass(result) {
@@ -208,9 +215,17 @@ export default function StudentDetail() {
   const [reviewError, setReviewError] = useState(null);
   const [submittingReview, setSubmittingReview] = useState(false);
 
-  const [missDraft, setMissDraft] = useState(makeEmptyMissDraft());
-  const [missSubmitting, setMissSubmitting] = useState(false);
-  const [missError, setMissError] = useState(null);
+  const [endingId, setEndingId] = useState(null);
+  const [endDate, setEndDate] = useState("");
+  const [endSubmitting, setEndSubmitting] = useState(false);
+  const [endError, setEndError] = useState(null);
+  const [reactivatingId, setReactivatingId] = useState(null);
+
+  const [addingId, setAddingId] = useState(null);
+  const [addSessionsCount, setAddSessionsCount] = useState("");
+  const [addSessionsPrice, setAddSessionsPrice] = useState("");
+  const [addSubmitting, setAddSubmitting] = useState(false);
+  const [addError, setAddError] = useState(null);
 
   function loadStudent() {
     return getStudentDetail(id).then((data) => setStudent(data));
@@ -283,11 +298,6 @@ export default function StudentDetail() {
     return map;
   }, [student]);
 
-  const selectedMissSession = useMemo(() => {
-    if (!student) return null;
-    return student.sessions.find((s) => String(s.session_id) === String(missDraft.session_id)) ?? null;
-  }, [student, missDraft.session_id]);
-
   // Group student.sessions by enrollment_id for the enrolled sessions card UI
   const enrollmentGroups = useMemo(() => {
     if (!student) return [];
@@ -299,6 +309,7 @@ export default function StudentDetail() {
           class_id: s.class_id,
           class_name: s.class_name,
           subject: s.subject,
+          enrolled_date: s.enrolled_date,
           total_sessions: s.total_sessions,
           remaining_sessions: s.remaining_sessions,
           price: s.price,
@@ -368,12 +379,86 @@ export default function StudentDetail() {
   }
 
   async function handleUnenroll(enrollmentId, className) {
-    if (!confirm(`Remove "${className}" from this student?`)) return;
+    if (!confirm(`Permanently delete "${className}" and all its history for this student? This can't be undone.`)) return;
     try {
       await deleteEnrollment(enrollmentId);
       await loadStudent();
     } catch (err) {
       alert("Error removing enrollment: " + err.message);
+    }
+  }
+
+  function startEndEnrollment(enrollmentId) {
+    setEndingId(enrollmentId);
+    setEndDate(new Date().toISOString().slice(0, 10));
+    setEndError(null);
+  }
+
+  function handleEndEnrollmentClick(group) {
+    if (!confirm(`End enrollment for "${group.class_name}"? You'll be asked to set an exit date next.`)) return;
+    startEndEnrollment(group.enrollment_id);
+  }
+
+  function cancelEndEnrollment() {
+    setEndingId(null);
+    setEndError(null);
+  }
+
+  async function confirmEndEnrollment(enrollmentId) {
+    if (!endDate) return;
+    setEndSubmitting(true);
+    setEndError(null);
+    try {
+      await endEnrollment(enrollmentId, { end_date: endDate, status: "Dropped" });
+      setEndingId(null);
+      await loadStudent();
+    } catch (err) {
+      setEndError(err.message);
+    } finally {
+      setEndSubmitting(false);
+    }
+  }
+
+  async function handleReactivate(enrollmentId) {
+    setReactivatingId(enrollmentId);
+    try {
+      await reactivateEnrollment(enrollmentId);
+      await loadStudent();
+    } catch (err) {
+      alert("Error reactivating enrollment: " + err.message);
+    } finally {
+      setReactivatingId(null);
+    }
+  }
+
+  function startAddSessions(enrollmentId) {
+    setAddingId(enrollmentId);
+    setAddSessionsCount("");
+    setAddSessionsPrice("");
+    setAddError(null);
+  }
+
+  function cancelAddSessions() {
+    setAddingId(null);
+    setAddError(null);
+  }
+
+  async function confirmAddSessions(enrollmentId) {
+    const count = Number(addSessionsCount);
+    if (!count || count <= 0) return;
+    setAddSubmitting(true);
+    setAddError(null);
+    try {
+      await addSessionsToEnrollment(enrollmentId, {
+        additional_sessions: count,
+        additional_price: addSessionsPrice !== "" ? Number(addSessionsPrice) : null,
+      });
+      setAddingId(null);
+      await loadStudent();
+    } catch (err) {
+      setAddError(err.message);
+    } finally {
+      setAddSubmitting(false);
     }
   }
 
@@ -426,35 +511,11 @@ export default function StudentDetail() {
     }
   }
 
-  function resetMissDraft() { setMissDraft(makeEmptyMissDraft()); setMissError(null); }
-
-  function handlePickMissSession(sessionId) {
-    const session = student.sessions.find((s) => String(s.session_id) === String(sessionId));
-    setMissDraft({ step: 2, session_id: sessionId, review_date: session ? mostRecentDateFor(session.day_of_week) : "" });
-  }
-
-  function handleMissDateChange(value) { setMissDraft((prev) => ({ ...prev, review_date: value })); }
-  function goToMissStep(step) { setMissDraft((prev) => ({ ...prev, step })); }
-
-  async function handleConfirmMiss() {
-    if (!selectedMissSession || !missDraft.review_date) return;
-    setMissSubmitting(true);
-    setMissError(null);
-    try {
-      await markSessionMissed(student.id, selectedMissSession.session_id, { review_date: missDraft.review_date });
-      resetMissDraft();
-      await loadStudent();
-      await getStudentReviews(id).then(setReviews);
-    } catch (err) {
-      setMissError(err.message);
-    } finally {
-      setMissSubmitting(false);
-    }
-  }
-
   if (loading) return <p className="p-8 text-slate-400">Loading...</p>;
   if (error) return <p className="p-8 text-red-500">{error}</p>;
   if (!student) return null;
+
+  const pastEnrollments = student.past_enrollments ?? [];
 
   const classOptions = draft.subject ? classesForSubject(draft.subject) : [];
   const sessionOptions = draft.class_id ? sessionsForClass(draft.class_id) : [];
@@ -517,55 +578,11 @@ export default function StudentDetail() {
         </div>
 
         <div className="flex flex-col gap-6">
-          {/* Enrolled Sessions */}
+          {/* Enroll form */}
           <div className="bg-white border border-slate-200 rounded-xl p-6">
-            <h2 className="text-lg font-semibold text-slate-900 mb-4">Enrolled Sessions</h2>
+            <h2 className="text-lg font-semibold text-slate-900 mb-4">Enroll in a Class</h2>
 
-            {enrollmentGroups.length === 0 ? (
-              <p className="text-sm text-slate-400 mb-4">Not enrolled in any class sessions yet.</p>
-            ) : (
-              <div className="space-y-2 mb-4 max-h-[400px] overflow-y-auto pr-1">
-                {enrollmentGroups.map((group) => (
-                  <div key={group.enrollment_id} className="border border-slate-100 rounded-lg px-3 py-2">
-                    <div className="flex items-start justify-between">
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-1.5 flex-wrap">
-                          <p className="text-sm font-medium text-slate-800 truncate">{group.class_name}</p>
-                          {group.subject && (
-                            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-50 text-purple-700 flex-shrink-0">
-                              {group.subject}
-                            </span>
-                          )}
-                        </div>
-                        {/* All slots for this enrollment */}
-                        {group.slots.map((s) => (
-                          <p key={s.session_id} className="text-xs text-slate-400 truncate">
-                            {s.day_of_week.slice(0, 3)} {formatTime(s.start_time)}–{formatTime(s.end_time)}
-                            {s.teacher_name && ` · ${s.teacher_name}`}
-                          </p>
-                        ))}
-                        {enrollmentSummary(group) && (
-                          <p className="text-xs text-slate-400 mt-0.5 truncate">{enrollmentSummary(group)}</p>
-                        )}
-                      </div>
-                      <button
-                        onClick={() => handleUnenroll(group.enrollment_id, group.class_name)}
-                        className="text-xs text-red-400 hover:text-red-600 font-medium flex-shrink-0 ml-3"
-                      >
-                        Remove
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {/* Enroll form */}
-            <form onSubmit={handleEnroll} className="border-t border-slate-100 pt-4">
-              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">
-                Enroll in a class
-              </p>
-
+            <form onSubmit={handleEnroll}>
               <div className="grid grid-cols-2 gap-2 mb-3">
                 <div>
                   <label className={labelClass}>Subject</label>
@@ -652,89 +669,265 @@ export default function StudentDetail() {
               </button>
             </form>
           </div>
-
-          {/* Mark a session missed */}
-          <div className="bg-white border border-slate-200 rounded-xl p-6">
-            <h2 className="text-lg font-semibold text-slate-900 mb-1">Mark a Session Missed</h2>
-            <p className="text-xs text-slate-400 mb-4">Won't count against the student's remaining sessions.</p>
-
-            {student.sessions.length === 0 ? (
-              <p className="text-sm text-slate-400">This student isn't enrolled in any sessions yet.</p>
-            ) : (
-              <>
-                <div className="flex items-center gap-1.5 mb-4">
-                  {["Class", "Date", "Confirm"].map((label, idx) => {
-                    const stepNum = idx + 1;
-                    const active = missDraft.step === stepNum;
-                    const done = missDraft.step > stepNum;
-                    return (
-                      <div key={label} className="flex items-center gap-1.5 flex-1">
-                        <span className={`flex-shrink-0 w-5 h-5 rounded-full text-[10px] flex items-center justify-center font-semibold ${active ? "bg-amber-500 text-white" : done ? "bg-amber-100 text-amber-700" : "bg-slate-100 text-slate-400"}`}>
-                          {stepNum}
-                        </span>
-                        <span className={`text-xs ${active ? "text-slate-800 font-medium" : "text-slate-400"}`}>{label}</span>
-                        {idx < 2 && <div className="flex-1 h-px bg-slate-100" />}
-                      </div>
-                    );
-                  })}
-                </div>
-
-                {missDraft.step === 1 && (
-                  <div className="space-y-1.5 max-h-[260px] overflow-y-auto pr-1">
-                    {student.sessions.map((s) => (
-                      <button
-                        key={s.session_id}
-                        onClick={() => handlePickMissSession(s.session_id)}
-                        className="w-full text-left px-2.5 py-2 text-xs border border-slate-200 rounded-lg hover:bg-amber-50 hover:border-amber-300 transition-colors"
-                      >
-                        <p className="font-medium text-slate-800 truncate">{s.class_name}</p>
-                        <p className="text-slate-400">
-                          {s.day_of_week.slice(0, 3)} {formatTime(s.start_time)}–{formatTime(s.end_time)}
-                          {s.teacher_name && ` · ${s.teacher_name}`}
-                        </p>
-                      </button>
-                    ))}
-                  </div>
-                )}
-
-                {missDraft.step === 2 && selectedMissSession && (
-                  <div>
-                    <p className="text-xs text-slate-500 mb-3">
-                      Marking <span className="font-medium text-slate-800">{selectedMissSession.class_name}</span>{" "}
-                      ({selectedMissSession.day_of_week.slice(0, 3)} {formatTime(selectedMissSession.start_time)}–{formatTime(selectedMissSession.end_time)}) as missed.
-                    </p>
-                    <label className={labelClass}>Date</label>
-                    <input type="date" value={missDraft.review_date} onChange={(e) => handleMissDateChange(e.target.value)} className={inputClass} />
-                    <div className="flex gap-2 mt-4">
-                      <button onClick={() => goToMissStep(1)} className="flex-1 py-2 text-sm font-medium rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 transition-colors">Back</button>
-                      <button onClick={() => goToMissStep(3)} disabled={!missDraft.review_date} className="flex-1 py-2 text-sm font-medium rounded-lg bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-white transition-colors">Continue</button>
-                    </div>
-                  </div>
-                )}
-
-                {missDraft.step === 3 && selectedMissSession && (
-                  <div>
-                    <div className="border border-amber-200 bg-amber-50 rounded-lg p-3 mb-4">
-                      <p className="text-sm text-amber-800">
-                        Mark <span className="font-semibold">{selectedMissSession.class_name}</span> on{" "}
-                        <span className="font-semibold">{missDraft.review_date}</span> as <span className="font-semibold">missed</span>?
-                      </p>
-                      <p className="text-xs text-amber-600 mt-1">This won't count against the student's remaining sessions.</p>
-                    </div>
-                    {missError && <p className="text-xs text-red-600 mb-2">{missError}</p>}
-                    <div className="flex gap-2">
-                      <button onClick={() => goToMissStep(2)} disabled={missSubmitting} className="flex-1 py-2 text-sm font-medium rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-50 transition-colors">Back</button>
-                      <button onClick={handleConfirmMiss} disabled={missSubmitting} className="flex-1 py-2 text-sm font-medium rounded-lg bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-white transition-colors">
-                        {missSubmitting ? "Saving..." : "Confirm"}
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </>
-            )}
-          </div>
         </div>
       </div>
+
+      {/* Enrolled Sessions */}
+      <div className="bg-white border border-slate-200 rounded-xl p-6 mb-6">
+        <h2 className="text-xl font-semibold text-slate-900 mb-5">Enrolled Sessions</h2>
+
+        {enrollmentGroups.length === 0 ? (
+          <p className="text-base text-slate-400">Not enrolled in any class sessions yet.</p>
+        ) : (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+            {enrollmentGroups.map((group) => {
+              const isExhausted =
+                group.total_sessions != null && (group.remaining_sessions ?? group.total_sessions) <= 0;
+              const isEnding = endingId === group.enrollment_id;
+              const attended =
+                group.total_sessions != null
+                  ? group.total_sessions - (group.remaining_sessions ?? group.total_sessions)
+                  : null;
+              const pct =
+                group.total_sessions != null
+                  ? Math.min(100, Math.max(0, (attended / group.total_sessions) * 100))
+                  : null;
+              const isAdding = addingId === group.enrollment_id;
+              return (
+                <div key={group.enrollment_id} className="border border-slate-200 rounded-xl p-5 flex flex-col gap-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p className="text-lg font-semibold text-slate-800 truncate">{group.class_name}</p>
+                        {group.subject && (
+                          <span className="text-xs px-2 py-0.5 rounded-full bg-purple-50 text-purple-700 font-medium flex-shrink-0">
+                            {group.subject}
+                          </span>
+                        )}
+                        {isExhausted && (
+                          <span className="text-xs px-2 py-0.5 rounded-full bg-red-50 text-red-600 font-medium flex-shrink-0">
+                            Exhausted
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-sm text-slate-400 mt-0.5">
+                        {group.slots.length} {group.slots.length === 1 ? "session" : "sessions"} per week
+                      </p>
+                    </div>
+                    {group.enrolled_date && (
+                      <p className="text-xs text-slate-400 flex-shrink-0 text-right whitespace-nowrap">
+                        Enrolled<br />{group.enrolled_date}
+                      </p>
+                    )}
+                  </div>
+
+                  {/* All slots for this enrollment */}
+                  <div className="space-y-1.5">
+                    {group.slots.map((s) => (
+                      <div key={s.session_id} className="flex items-center justify-between gap-3 text-sm">
+                        <span className="text-slate-700 font-medium truncate">
+                          {s.day_of_week} · {formatTime(s.start_time)}–{formatTime(s.end_time)}
+                          <span className="text-slate-400 font-normal"> · {s.teacher_name || "Unassigned"}</span>
+                        </span>
+                        <span className="text-xs text-slate-400 flex-shrink-0">{durationMinutes(s)} min</span>
+                      </div>
+                    ))}
+                  </div>
+
+                  {group.total_sessions != null && (
+                    <div>
+                      <div className="flex items-center justify-between text-sm text-slate-500 mb-1.5">
+                        <span>Sessions used</span>
+                        <span className="font-medium text-slate-600">{attended} / {group.total_sessions}</span>
+                      </div>
+                      <div className="w-full h-2.5 bg-slate-100 rounded-full overflow-hidden">
+                        <div
+                          className={`h-full rounded-full ${isExhausted ? "bg-red-400" : "bg-blue-500"}`}
+                          style={{ width: `${pct}%` }}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {(group.price != null || group.payment_method || group.discount) && (
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm border-t border-slate-100 pt-3">
+                      {group.price != null && <Info label="Price" value={`${group.price.toLocaleString()}đ`} />}
+                      {group.payment_method && <Info label="Payment Method" value={group.payment_method} />}
+                      {group.discount && <Info label="Discount" value={group.discount} className="col-span-2" />}
+                    </div>
+                  )}
+
+                  {isExhausted && !isEnding && (
+                    <div className="flex items-center justify-between gap-2 bg-red-50 border border-red-100 rounded-lg px-3 py-2">
+                      <p className="text-sm text-red-700">
+                        No sessions remaining — the student has dropped off this class's roster. Renew or end the enrollment.
+                      </p>
+                    </div>
+                  )}
+
+                  {isEnding && (
+                    <div className="border border-amber-200 bg-amber-50 rounded-lg p-3">
+                      <p className="text-sm text-amber-800 mb-2">
+                        Mark <span className="font-semibold">{group.class_name}</span> as ended. This keeps the enrollment's history (attended sessions, reviews) but removes it from the active roster.
+                      </p>
+                      <label className="block text-xs font-medium text-amber-700 mb-1">Exit date</label>
+                      <input
+                        type="date"
+                        value={endDate}
+                        onChange={(e) => setEndDate(e.target.value)}
+                        className="w-full px-2 py-1.5 text-sm border border-amber-200 rounded-md focus:outline-none focus:ring-2 focus:ring-amber-400 bg-white"
+                      />
+                      {endError && <p className="text-xs text-red-600 mt-1.5">{endError}</p>}
+                      <div className="flex gap-2 mt-2">
+                        <button
+                          onClick={cancelEndEnrollment}
+                          disabled={endSubmitting}
+                          className="flex-1 py-1.5 text-sm font-medium rounded-md border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          onClick={() => confirmEndEnrollment(group.enrollment_id)}
+                          disabled={endSubmitting || !endDate}
+                          className="flex-1 py-1.5 text-sm font-medium rounded-md bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-white"
+                        >
+                          {endSubmitting ? "Saving..." : "Confirm"}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {isAdding && (
+                    <div className="border border-blue-200 bg-blue-50 rounded-lg p-3">
+                      <p className="text-sm text-blue-800 mb-2">
+                        Add more sessions to <span className="font-semibold">{group.class_name}</span>'s pack.
+                        {group.total_sessions != null && (
+                          <> Currently {group.total_sessions} total.</>
+                        )}
+                      </p>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="block text-xs font-medium text-blue-700 mb-1">Sessions to add</label>
+                          <input
+                            type="number"
+                            min="1"
+                            value={addSessionsCount}
+                            onChange={(e) => setAddSessionsCount(e.target.value)}
+                            placeholder="e.g. 4"
+                            className="w-full px-2 py-1.5 text-sm border border-blue-200 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-400 bg-white"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-blue-700 mb-1">Additional price (optional)</label>
+                          <input
+                            type="number"
+                            min="0"
+                            value={addSessionsPrice}
+                            onChange={(e) => setAddSessionsPrice(e.target.value)}
+                            placeholder="VNĐ"
+                            className="w-full px-2 py-1.5 text-sm border border-blue-200 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-400 bg-white"
+                          />
+                        </div>
+                      </div>
+                      {addError && <p className="text-xs text-red-600 mt-1.5">{addError}</p>}
+                      <div className="flex gap-2 mt-2">
+                        <button
+                          onClick={cancelAddSessions}
+                          disabled={addSubmitting}
+                          className="flex-1 py-1.5 text-sm font-medium rounded-md border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          onClick={() => confirmAddSessions(group.enrollment_id)}
+                          disabled={addSubmitting || !addSessionsCount || Number(addSessionsCount) <= 0}
+                          className="flex-1 py-1.5 text-sm font-medium rounded-md bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white"
+                        >
+                          {addSubmitting ? "Saving..." : "Confirm"}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-3 gap-2 mt-auto pt-1">
+                    <button
+                      onClick={() => startAddSessions(group.enrollment_id)}
+                      className="py-2 px-1 text-xs sm:text-sm font-medium rounded-lg border border-blue-200 text-blue-700 bg-blue-50 hover:bg-blue-100 transition-colors"
+                    >
+                      Buy More Sessions
+                    </button>
+                    <button
+                      onClick={() => handleEndEnrollmentClick(group)}
+                      className="py-2 px-1 text-xs sm:text-sm font-medium rounded-lg border border-amber-200 text-amber-700 bg-amber-50 hover:bg-amber-100 transition-colors"
+                    >
+                      End Enrollment
+                    </button>
+                    <button
+                      onClick={() => handleUnenroll(group.enrollment_id, group.class_name)}
+                      className="py-2 px-1 text-xs sm:text-sm font-medium rounded-lg border border-red-200 text-red-600 bg-red-50 hover:bg-red-100 transition-colors"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Past enrollments */}
+      {pastEnrollments.length > 0 && (
+        <div className="bg-white border border-slate-200 rounded-xl p-6 mb-6">
+          <h2 className="text-lg font-semibold text-slate-900 mb-1">Past Enrollments</h2>
+          <p className="text-xs text-slate-400 mb-4">Classes this student has ended or completed. History is kept for reference.</p>
+          <div className="space-y-2">
+            {pastEnrollments.map((p) => (
+              <div key={p.enrollment_id} className="border border-slate-100 rounded-lg px-3 py-2.5">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <p className="text-sm font-medium text-slate-800 truncate">
+                        {p.slots[0]?.class_name ?? "—"}
+                      </p>
+                      {p.slots[0]?.subject && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-50 text-purple-700 flex-shrink-0">
+                          {p.slots[0].subject}
+                        </span>
+                      )}
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium flex-shrink-0 ${pastEnrollmentStatusClass(p.status)}`}>
+                        {p.status}
+                      </span>
+                    </div>
+                    {p.slots.map((s) => (
+                      <p key={s.session_id} className="text-xs text-slate-400 truncate">
+                        {s.day_of_week.slice(0, 3)} {formatTime(s.start_time)}–{formatTime(s.end_time)}
+                        {s.teacher_name && ` · ${s.teacher_name}`}
+                      </p>
+                    ))}
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      {p.enrolled_date} → {p.end_date ?? "—"}
+                      {p.total_sessions != null
+                        ? ` · ${p.attended_sessions}/${p.total_sessions} sessions attended`
+                        : ` · ${p.attended_sessions} sessions attended`}
+                      {p.price != null && ` · ${p.price.toLocaleString()}đ`}
+                      {p.payment_method && ` · ${p.payment_method}`}
+                      {p.discount && ` · Discount: ${p.discount}`}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => handleReactivate(p.enrollment_id)}
+                    disabled={reactivatingId === p.enrollment_id}
+                    className="text-xs text-blue-600 hover:text-blue-700 font-medium flex-shrink-0 disabled:opacity-50 whitespace-nowrap"
+                  >
+                    {reactivatingId === p.enrollment_id ? "Reactivating..." : "Reactivate"}
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Session reviews */}
       <div className="bg-white border border-slate-200 rounded-xl p-6">

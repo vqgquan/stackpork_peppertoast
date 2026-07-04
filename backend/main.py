@@ -134,6 +134,7 @@ class Enrollment(Base):
     student_id = Column(Integer, ForeignKey("students.id"), nullable=False)
     # session_id removed — sessions are now linked via enrollment_sessions join table
     enrolled_date = Column(Date, nullable=False)
+    end_date = Column(Date, nullable=True)  # set when status moves to Dropped/Completed
     status = Column(Enum(EnrollmentStatusEnum), nullable=False, default=EnrollmentStatusEnum.enrolled)
     total_sessions = Column(Integer, nullable=True)
     remaining_sessions = Column(Integer, nullable=True)
@@ -380,7 +381,8 @@ def build_class_out(c: Class) -> ClassOut:
         seen_students = {}
         for es in s.enrollment_sessions:
             enr = es.enrollment
-            if enr.status == EnrollmentStatusEnum.enrolled and not enr.student.is_archived:
+            exhausted = enr.remaining_sessions is not None and enr.remaining_sessions <= 0
+            if enr.status == EnrollmentStatusEnum.enrolled and not enr.student.is_archived and not exhausted:
                 stu = enr.student
                 seen_students[stu.id] = stu.name
         roster = [SessionRosterStudentOut(id=sid, name=sname) for sid, sname in seen_students.items()]
@@ -406,11 +408,23 @@ class EnrollmentCreate(BaseModel):
     payment_method: Optional[str] = None
     discount: Optional[str] = None
 
+class EnrollmentEndRequest(BaseModel):
+    end_date: date
+    status: EnrollmentStatusEnum = EnrollmentStatusEnum.dropped
+
+class EnrollmentAddSessionsRequest(BaseModel):
+    """Buy more sessions for an active, shared-pool enrollment.
+    Bumps total_sessions (creating a pack if the enrollment was previously
+    open-ended) and optionally tacks on extra price for the top-up."""
+    additional_sessions: int = Field(..., gt=0)
+    additional_price: Optional[int] = None
+
 class EnrollmentOut(BaseModel):
     id: int
     student_id: int
     session_ids: list[int]
     enrolled_date: date
+    end_date: Optional[date] = None
     status: EnrollmentStatusEnum
     total_sessions: Optional[int] = None
     remaining_sessions: Optional[int] = None
@@ -425,6 +439,7 @@ def build_enrollment_out(e: Enrollment) -> EnrollmentOut:
         student_id=e.student_id,
         session_ids=[es.session_id for es in e.enrollment_sessions],
         enrolled_date=e.enrolled_date,
+        end_date=e.end_date,
         status=e.status,
         total_sessions=e.total_sessions,
         remaining_sessions=e.remaining_sessions,
@@ -452,8 +467,32 @@ class StudentSessionOut(BaseModel):
     payment_method: Optional[str] = None
     discount: Optional[str] = None
 
+class PastEnrollmentSlotOut(BaseModel):
+    session_id: int
+    class_id: int
+    class_name: str
+    subject: Optional[str] = None
+    day_of_week: DayOfWeekEnum
+    start_time: time
+    end_time: time
+    teacher_name: Optional[str] = None
+
+class PastEnrollmentOut(BaseModel):
+    enrollment_id: int
+    status: EnrollmentStatusEnum
+    enrolled_date: date
+    end_date: Optional[date] = None
+    total_sessions: Optional[int] = None
+    remaining_sessions: Optional[int] = None
+    attended_sessions: int
+    price: Optional[int] = None
+    payment_method: Optional[str] = None
+    discount: Optional[str] = None
+    slots: list[PastEnrollmentSlotOut] = []
+
 class StudentDetailOut(StudentOut):
     sessions: list[StudentSessionOut] = []
+    past_enrollments: list[PastEnrollmentOut] = []
 
 # --- Teacher detail schema ---
 class TeacherSessionOut(BaseModel):
@@ -698,8 +737,53 @@ def get_student_detail(id: int, db: Session = Depends(get_db)):
                 payment_method=enrollment.payment_method,
                 discount=enrollment.discount,
             ))
+    past_out = []
+    for enrollment in student.enrollments:
+        if enrollment.status == EnrollmentStatusEnum.enrolled:
+            continue
+        slots = []
+        sorted_es = sorted(
+            enrollment.enrollment_sessions,
+            key=lambda es: (
+                _DAY_ORDER.index(es.session.day_of_week.value if hasattr(es.session.day_of_week, "value") else es.session.day_of_week),
+                es.session.start_time,
+            ),
+        )
+        for es in sorted_es:
+            s = es.session
+            c = s.class_
+            slots.append(PastEnrollmentSlotOut(
+                session_id=s.id,
+                class_id=c.id,
+                class_name=c.name,
+                subject=c.subject,
+                day_of_week=s.day_of_week,
+                start_time=s.start_time,
+                end_time=s.end_time,
+                teacher_name=s.teacher.name if s.teacher else None,
+            ))
+        if enrollment.total_sessions is not None and enrollment.remaining_sessions is not None:
+            attended = enrollment.total_sessions - enrollment.remaining_sessions
+        else:
+            attended = count_attended_sessions(db, enrollment)
+        past_out.append(PastEnrollmentOut(
+            enrollment_id=enrollment.id,
+            status=enrollment.status,
+            enrolled_date=enrollment.enrolled_date,
+            end_date=enrollment.end_date,
+            total_sessions=enrollment.total_sessions,
+            remaining_sessions=enrollment.remaining_sessions,
+            attended_sessions=attended,
+            price=enrollment.price,
+            payment_method=enrollment.payment_method,
+            discount=enrollment.discount,
+            slots=slots,
+        ))
+    past_out.sort(key=lambda p: p.end_date or p.enrolled_date, reverse=True)
+
     result = StudentDetailOut.model_validate(student)
     result.sessions = sessions_out
+    result.past_enrollments = past_out
     return result
 
 @app.post("/students", response_model=StudentOut, status_code=201)
@@ -873,6 +957,59 @@ def delete_enrollment(id: int, db: Session = Depends(get_db)):
     db.delete(e)
     db.commit()
 
+@app.post("/enrollments/{id}/end", response_model=EnrollmentOut)
+def end_enrollment(id: int, payload: EnrollmentEndRequest, db: Session = Depends(get_db)):
+    """Soft-end an enrollment (e.g. student exits early on their own).
+    Keeps the enrollment row, its reviews and attendance history intact —
+    just marks it Dropped/Completed with an end_date so it moves out of the
+    active roster and into the student's past-enrollments list."""
+    e = db.query(Enrollment).filter(Enrollment.id == id).first()
+    if not e:
+        raise HTTPException(status_code=404, detail="Enrollment not found")
+    if e.status != EnrollmentStatusEnum.enrolled:
+        raise HTTPException(status_code=400, detail="Enrollment is already ended")
+    if payload.end_date < e.enrolled_date:
+        raise HTTPException(status_code=400, detail="End date can't be before the enrollment date")
+    e.status = payload.status
+    e.end_date = payload.end_date
+    db.commit()
+    db.refresh(e)
+    return build_enrollment_out(e)
+
+@app.post("/enrollments/{id}/reactivate", response_model=EnrollmentOut)
+def reactivate_enrollment(id: int, db: Session = Depends(get_db)):
+    """Undo an accidental end — puts the enrollment back on the active roster."""
+    e = db.query(Enrollment).filter(Enrollment.id == id).first()
+    if not e:
+        raise HTTPException(status_code=404, detail="Enrollment not found")
+    if e.status == EnrollmentStatusEnum.enrolled:
+        raise HTTPException(status_code=400, detail="Enrollment is already active")
+    e.status = EnrollmentStatusEnum.enrolled
+    e.end_date = None
+    db.commit()
+    db.refresh(e)
+    return build_enrollment_out(e)
+
+@app.post("/enrollments/{id}/add-sessions", response_model=EnrollmentOut)
+def add_sessions_to_enrollment(id: int, payload: EnrollmentAddSessionsRequest, db: Session = Depends(get_db)):
+    """Buy more sessions for an active enrollment's shared pool. Bumps
+    total_sessions (starting a pack if it was previously open-ended) and
+    recomputes remaining_sessions from the existing attendance history.
+    Optionally adds to the recorded price for the top-up."""
+    e = db.query(Enrollment).filter(Enrollment.id == id).first()
+    if not e:
+        raise HTTPException(status_code=404, detail="Enrollment not found")
+    if e.status != EnrollmentStatusEnum.enrolled:
+        raise HTTPException(status_code=400, detail="Can't add sessions to an enrollment that has already ended")
+    e.total_sessions = (e.total_sessions or 0) + payload.additional_sessions
+    if payload.additional_price is not None:
+        e.price = (e.price or 0) + payload.additional_price
+    db.flush()
+    recompute_remaining(db, e)
+    db.commit()
+    db.refresh(e)
+    return build_enrollment_out(e)
+
 # --- Session Reviews ---
 @app.get("/students/{student_id}/reviews", response_model=list[SessionReviewOut])
 def get_student_reviews(student_id: int, db: Session = Depends(get_db)):
@@ -990,7 +1127,8 @@ def update_class_session(session_id: int, payload: ClassSessionCreate, db: Sessi
     seen_students = {}
     for es in s.enrollment_sessions:
         enr = es.enrollment
-        if enr.status == EnrollmentStatusEnum.enrolled and not enr.student.is_archived:
+        exhausted = enr.remaining_sessions is not None and enr.remaining_sessions <= 0
+        if enr.status == EnrollmentStatusEnum.enrolled and not enr.student.is_archived and not exhausted:
             stu = enr.student
             seen_students[stu.id] = stu.name
     roster = [SessionRosterStudentOut(id=sid, name=sname) for sid, sname in seen_students.items()]
