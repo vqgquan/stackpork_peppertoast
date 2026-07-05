@@ -1343,7 +1343,7 @@ def dashboard_attendance(
             start = max(e.enrolled_date, month_start)
             if s.valid_from:
                 start = max(start, s.valid_from)
-            for d in occurrence_dates_list(s.day_of_week, start, min(month_end, today)):
+            for d in occurrence_dates_list(s.day_of_week, start, month_end):
                 occurrence_date_set.add(d)
                 date_session_map[str(d)] = s.id
 
