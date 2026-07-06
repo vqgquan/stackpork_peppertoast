@@ -33,6 +33,76 @@ const STATUS_STYLES = {
   Cancelled: "bg-red-50 text-red-600",
 };
 
+// ─── Attendance status config (4 states) ───────────────────────────────────
+// Present / Absent (No Notice) consume a session from the shared pool.
+// Absent (Notice) does not. "No Info" simply means no record exists yet —
+// it isn't a selectable option during roll call, since roll call is the
+// act of recording one of the other three states.
+const ATTENDANCE_STATUS_ORDER = ["present", "absent_notice", "absent_no_notice"];
+const ATTENDANCE_STATUS_CONFIG = {
+  present: {
+    label: "Present",
+    activeClass: "bg-green-50 text-green-700 border-green-200",
+  },
+  absent_notice: {
+    label: "Absent (Notice)",
+    activeClass: "bg-amber-50 text-amber-700 border-amber-200",
+  },
+  absent_no_notice: {
+    label: "Absent (No Notice)",
+    activeClass: "bg-red-50 text-red-600 border-red-200",
+  },
+};
+
+// JS Date.getDay(): 0 = Sunday ... 6 = Saturday
+const JS_DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+function dayNameForDate(dateStr) {
+  const dt = new Date(dateStr + "T00:00:00");
+  return JS_DAY_NAMES[dt.getDay()];
+}
+
+// Returns a human-readable reason the date can't be used for roll call, or
+// null if it's valid. Checks that the date actually falls on the session's
+// recurring day-of-week, and that it's within the class's active range.
+function getRollCallDateError(session, classData, dateStr) {
+  if (!session || !dateStr) return null;
+  const actualDay = dayNameForDate(dateStr);
+  if (actualDay !== session.day_of_week) {
+    return `${dateStr} is a ${actualDay}, but this session only meets on ${session.day_of_week}s.`;
+  }
+  if (classData?.start_date && dateStr < classData.start_date) {
+    return `This class doesn't start until ${classData.start_date}.`;
+  }
+  if (classData?.end_date && dateStr > classData.end_date) {
+    return `This class ended on ${classData.end_date}.`;
+  }
+  return null;
+}
+
+function AttendanceLegend() {
+  return (
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 mb-4 p-3 bg-slate-50 rounded-lg border border-slate-100 text-xs text-slate-600">
+      <span className="px-2 py-1 rounded-full bg-green-50 text-green-700 border border-green-200 font-medium">
+        Present
+      </span>
+      <span>deducts a session</span>
+      <span className="px-2 py-1 rounded-full bg-amber-50 text-amber-700 border border-amber-200 font-medium">
+        Absent (Notice)
+      </span>
+      <span>no deduction</span>
+      <span className="px-2 py-1 rounded-full bg-red-50 text-red-600 border border-red-200 font-medium">
+        Absent (No Notice)
+      </span>
+      <span>deducts a session</span>
+      <span className="px-2 py-1 rounded-full bg-slate-100 text-slate-500 border border-slate-200 font-medium">
+        No Info
+      </span>
+      <span>class hasn't happened / not recorded yet</span>
+    </div>
+  );
+}
+
 function toMinutes(t) {
   const [h, m] = t.split(":").map(Number);
   return h * 60 + m;
@@ -416,6 +486,10 @@ export default function ClassDetail() {
 
   async function handleSaveAttendance() {
     if (!rollCallSession || !rollCallDate) return;
+    if (rollCallDateError) {
+      setAttendanceError(rollCallDateError);
+      return;
+    }
     setSavingAttendance(true);
     setAttendanceError(null);
     setAttendanceSuccess(false);
@@ -425,7 +499,7 @@ export default function ClassDetail() {
         session_id: Number(rollCallSessionId),
         teacher_id: rollCallSession.teacher_id || null,
         attendance_date: rollCallDate,
-        attended: a.attended,
+        status: a.status,
         note: a.note || null,
       }));
       await bulkUpsertAttendance(records);
@@ -445,6 +519,23 @@ export default function ClassDetail() {
     [classData, rollCallSessionId],
   );
 
+  const rollCallDateError = useMemo(
+    () => getRollCallDateError(rollCallSession, classData, rollCallDate),
+    [rollCallSession, classData, rollCallDate],
+  );
+
+  // Whenever the selected session changes (including on initial load), snap
+  // the date to the most recent occurrence of that session's day-of-week if
+  // the current date doesn't match — so the common case just works and the
+  // user only sees an error if they deliberately pick an off-pattern date.
+  useEffect(() => {
+    if (!rollCallSession || !rollCallDate) return;
+    if (dayNameForDate(rollCallDate) !== rollCallSession.day_of_week) {
+      setRollCallDate(mostRecentDateFor(rollCallSession.day_of_week));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rollCallSession]);
+
   useEffect(() => {
     if (!rollCallSession || !rollCallDate) return;
     setLoadingAttendance(true);
@@ -458,16 +549,16 @@ export default function ClassDetail() {
         const existingMap = {};
         records.forEach((r) => {
           existingMap[r.student_id] = {
-            attended: r.attended,
+            status: r.status,
             note: r.note || "",
             record_id: r.id,
           };
         });
-        // Merge with enrolled students — default to attended=true
+        // Merge with enrolled students — default to Present for new entries
         const merged = {};
         rollCallSession.students.forEach((s) => {
           merged[s.id] = existingMap[s.id] ?? {
-            attended: true,
+            status: "present",
             note: "",
             record_id: null,
           };
@@ -477,7 +568,7 @@ export default function ClassDetail() {
       .catch(() => {
         const merged = {};
         rollCallSession.students.forEach((s) => {
-          merged[s.id] = { attended: true, note: "", record_id: null };
+          merged[s.id] = { status: "present", note: "", record_id: null };
         });
         setAttendance(merged);
       })
@@ -991,31 +1082,63 @@ export default function ClassDetail() {
                   type="date"
                   value={rollCallDate}
                   onChange={(e) => setRollCallDate(e.target.value)}
-                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className={`w-full px-3 py-2 text-sm border rounded-lg focus:outline-none focus:ring-2 ${
+                    rollCallDateError
+                      ? "border-red-300 focus:ring-red-400"
+                      : "border-slate-200 focus:ring-blue-500"
+                  }`}
                 />
+                {rollCallSession && (
+                  <p
+                    className={`text-[11px] mt-1 ${rollCallDateError ? "text-red-600 font-medium" : "text-slate-400"}`}
+                  >
+                    {rollCallDateError
+                      ? rollCallDateError
+                      : `Meets on ${rollCallSession.day_of_week}s`}
+                  </p>
+                )}
               </div>
             </div>
 
             {loadingAttendance ? (
               <p className="text-sm text-slate-400 py-4">Loading...</p>
+            ) : rollCallDateError ? (
+              <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+                <p className="text-sm font-medium text-red-700 mb-1">
+                  Can't take roll call for this date
+                </p>
+                <p className="text-xs text-red-600">{rollCallDateError}</p>
+              </div>
             ) : !rollCallSession || rollCallSession.students.length === 0 ? (
               <p className="text-sm text-slate-400 py-4">
                 No students enrolled in this session yet.
               </p>
             ) : (
               <>
+                <AttendanceLegend />
+
                 {/* Summary */}
                 {(() => {
                   const entries = Object.entries(attendance);
-                  const present = entries.filter(([, a]) => a.attended).length;
-                  const absent = entries.length - present;
+                  const present = entries.filter(
+                    ([, a]) => a.status === "present",
+                  ).length;
+                  const absentNotice = entries.filter(
+                    ([, a]) => a.status === "absent_notice",
+                  ).length;
+                  const absentNoNotice = entries.filter(
+                    ([, a]) => a.status === "absent_no_notice",
+                  ).length;
                   return (
-                    <div className="flex gap-3 mb-4">
+                    <div className="flex flex-wrap gap-3 mb-4">
                       <span className="text-xs px-2 py-1 rounded-full bg-green-50 text-green-700 border border-green-200 font-medium">
                         Present: {present}
                       </span>
+                      <span className="text-xs px-2 py-1 rounded-full bg-amber-50 text-amber-700 border border-amber-200 font-medium">
+                        Absent (Notice): {absentNotice}
+                      </span>
                       <span className="text-xs px-2 py-1 rounded-full bg-red-50 text-red-600 border border-red-200 font-medium">
-                        Absent: {absent}
+                        Absent (No Notice): {absentNoNotice}
                       </span>
                       <span className="text-xs px-2 py-1 rounded-full bg-slate-100 text-slate-600 border border-slate-200 font-medium">
                         Total: {entries.length}
@@ -1048,24 +1171,30 @@ export default function ClassDetail() {
                               {student?.name ?? `Student #${studentId}`}
                             </td>
                             <td className="px-4 py-3">
-                              <button
-                                onClick={() =>
-                                  setAttendance((prev) => ({
-                                    ...prev,
-                                    [studentId]: {
-                                      ...prev[studentId],
-                                      attended: !prev[studentId].attended,
-                                    },
-                                  }))
-                                }
-                                className={`text-xs px-3 py-1.5 rounded-full border font-medium transition-all ${
-                                  a.attended
-                                    ? "bg-green-50 text-green-700 border-green-200"
-                                    : "bg-red-50 text-red-600 border-red-200"
-                                }`}
-                              >
-                                {a.attended ? "Present" : "Absent"}
-                              </button>
+                              <div className="inline-flex rounded-full border border-slate-200 overflow-hidden">
+                                {ATTENDANCE_STATUS_ORDER.map((statusKey) => (
+                                  <button
+                                    key={statusKey}
+                                    onClick={() =>
+                                      setAttendance((prev) => ({
+                                        ...prev,
+                                        [studentId]: {
+                                          ...prev[studentId],
+                                          status: statusKey,
+                                        },
+                                      }))
+                                    }
+                                    className={`text-xs px-2.5 py-1.5 font-medium border-r last:border-r-0 border-slate-200 transition-colors ${
+                                      a.status === statusKey
+                                        ? ATTENDANCE_STATUS_CONFIG[statusKey]
+                                            .activeClass
+                                        : "bg-white text-slate-400 hover:bg-slate-50"
+                                    }`}
+                                  >
+                                    {ATTENDANCE_STATUS_CONFIG[statusKey].label}
+                                  </button>
+                                ))}
+                              </div>
                             </td>
                             <td className="px-4 py-3">
                               <input

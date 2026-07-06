@@ -77,6 +77,69 @@ function colorFor(subject) {
   return SUBJECT_COLORS[subject] || DEFAULT_COLOR;
 }
 
+// ─── Attendance status config (4 states) ───────────────────────────────────
+// present / absent_no_notice consume a session from the enrollment's pool.
+// absent_notice / none (no record yet) do not.
+const CYCLE_ORDER = ["none", "present", "absent_notice", "absent_no_notice"];
+const STATUS_CONFIG = {
+  present: {
+    label: "Present",
+    symbol: "✓",
+    cellClass: "bg-green-100 text-green-700 hover:bg-green-200",
+    legendClass: "bg-green-100 text-green-700",
+    decrements: true,
+  },
+  absent_notice: {
+    label: "Absent (Notice)",
+    symbol: "N",
+    cellClass: "bg-amber-100 text-amber-700 hover:bg-amber-200",
+    legendClass: "bg-amber-100 text-amber-700",
+    decrements: false,
+  },
+  absent_no_notice: {
+    label: "Absent (No Notice)",
+    symbol: "✗",
+    cellClass: "bg-red-100 text-red-600 hover:bg-red-200",
+    legendClass: "bg-red-100 text-red-600",
+    decrements: true,
+  },
+  none: {
+    label: "No Info",
+    symbol: "·",
+    cellClass: "hover:bg-slate-100 text-slate-300",
+    legendClass: "bg-slate-100 text-slate-400",
+    decrements: false,
+  },
+};
+
+function AttendanceLegend() {
+  return (
+    <div className="flex flex-wrap items-center gap-4 mb-4 p-3 bg-slate-50 rounded-lg border border-slate-100">
+      {CYCLE_ORDER.map((key) => {
+        const cfg = STATUS_CONFIG[key];
+        return (
+          <div key={key} className="flex items-center gap-1.5">
+            <span
+              className={`w-5 h-5 flex-shrink-0 flex items-center justify-center rounded text-xs font-bold ${cfg.legendClass}`}
+            >
+              {cfg.symbol}
+            </span>
+            <span className="text-xs text-slate-600">
+              {cfg.label}
+              <span className="text-slate-400">
+                {cfg.decrements ? " · deducts a session" : " · no deduction"}
+              </span>
+            </span>
+          </div>
+        );
+      })}
+      <span className="text-xs text-slate-400 ml-auto">
+        Click a cell to cycle through states
+      </span>
+    </div>
+  );
+}
+
 function toMinutes(t) {
   const [h, m] = t.split(":").map(Number);
   return h * 60 + m;
@@ -809,14 +872,22 @@ function ReviewsTable({ allReviews, classes }) {
 
 // ─── Student Attendance table ──────────────────────────────────────────────────
 
-// Normalise raw API rows: convert attended_dates / absent_dates arrays to Sets.
-// No merging needed — backend now returns one row per enrollment already.
+// Normalise raw API rows: convert the three per-status date arrays into Sets.
 function normaliseRows(data) {
   return data.map((r) => ({
     ...r,
-    attended_dates: new Set(r.attended_dates),
-    absent_dates: new Set(r.absent_dates),
+    present_dates: new Set(r.present_dates),
+    absent_notice_dates: new Set(r.absent_notice_dates),
+    absent_no_notice_dates: new Set(r.absent_no_notice_dates),
   }));
+}
+
+// The persisted status for a date, ignoring any unsaved pending edits.
+function savedStatus(row, d) {
+  if (row.present_dates.has(d)) return "present";
+  if (row.absent_notice_dates.has(d)) return "absent_notice";
+  if (row.absent_no_notice_dates.has(d)) return "absent_no_notice";
+  return "none";
 }
 
 function AttendanceTable({ month, year, onSaved }) {
@@ -885,17 +956,13 @@ function AttendanceTable({ month, year, onSaved }) {
     return row.date_session_map[d];
   }
 
+  // Effective state for a cell: an unsaved pending edit wins over the saved value.
   function cellState(row, d) {
+    if (!row.occurrence_dates.includes(d)) return "na";
     const sessionId = sessionIdForDate(row, d);
     const key = `${row.student_id}:${sessionId}:${d}`;
-    if (pending[key] !== undefined) {
-      if (pending[key] === null) return "none";
-      return pending[key] ? "attended" : "absent";
-    }
-    if (row.attended_dates.has(d)) return "attended";
-    if (row.absent_dates.has(d)) return "absent";
-    if (row.occurrence_dates.includes(d)) return "none";
-    return "na";
+    if (pending[key] !== undefined) return pending[key];
+    return savedStatus(row, d);
   }
 
   function toggleCell(row, d) {
@@ -903,23 +970,17 @@ function AttendanceTable({ month, year, onSaved }) {
     const sessionId = sessionIdForDate(row, d);
     const key = `${row.student_id}:${sessionId}:${d}`;
     const cur = cellState(row, d);
-    const dbState = row.attended_dates.has(d)
-      ? "attended"
-      : row.absent_dates.has(d)
-        ? "absent"
-        : "none";
-    const next =
-      cur === "none" ? "attended" : cur === "attended" ? "absent" : "none";
+    const idx = CYCLE_ORDER.indexOf(cur);
+    const next = CYCLE_ORDER[(idx + 1) % CYCLE_ORDER.length];
+    const dbState = savedStatus(row, d);
     if (next === dbState) {
       setPending((p) => {
         const n = { ...p };
         delete n[key];
         return n;
       });
-    } else if (next === "none") {
-      setPending((p) => ({ ...p, [key]: null }));
     } else {
-      setPending((p) => ({ ...p, [key]: next === "attended" }));
+      setPending((p) => ({ ...p, [key]: next }));
     }
   }
 
@@ -930,9 +991,9 @@ function AttendanceTable({ month, year, onSaved }) {
       const toDelete = [];
       const toUpsert = [];
 
-      for (const [key, attended] of Object.entries(pending)) {
+      for (const [key, status] of Object.entries(pending)) {
         const [student_id, session_id, attendance_date] = key.split(":");
-        if (attended === null) {
+        if (status === "none") {
           toDelete.push({
             student_id: Number(student_id),
             session_id: Number(session_id),
@@ -941,14 +1002,11 @@ function AttendanceTable({ month, year, onSaved }) {
         } else {
           // Look up teacher_id from the row's schedules
           const row = rows.find((r) => String(r.student_id) === student_id);
-          const schedule = row?.schedules?.find(
-            (s) => String(s.session_id) === session_id,
-          );
           toUpsert.push({
             student_id: Number(student_id),
             session_id: Number(session_id),
             attendance_date,
-            attended,
+            status,
             teacher_id: row?.teacher_id ?? null,
             note: null,
           });
@@ -1006,8 +1064,8 @@ function AttendanceTable({ month, year, onSaved }) {
             Student Attendance
           </h2>
           <p className="text-xs text-slate-400 mt-0.5">
-            Click a cell to mark attended (green) or absent (red). Save when
-            done.
+            Click a cell to cycle: No Info → Present → Absent (Notice) →
+            Absent (No Notice). Save when done.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -1026,6 +1084,8 @@ function AttendanceTable({ month, year, onSaved }) {
           </button>
         </div>
       </div>
+
+      <AttendanceLegend />
 
       {/* Filters */}
       <div className="flex flex-wrap items-center gap-2 mb-4">
@@ -1135,36 +1195,30 @@ function AttendanceTable({ month, year, onSaved }) {
                   )
                   .join(" & ");
 
-                // Compute remaining accounting for unsaved pending changes
+                // Compute remaining accounting for unsaved pending changes.
+                // Backend's remaining_sessions already reflects saved
+                // Present/Absent(No Notice) records; we adjust it by the
+                // net change in "session-consuming" status caused by
+                // pending edits for this row.
                 const rowSessionIds = new Set(
                   (row.schedules ?? []).map((s) => String(s.session_id)),
                 );
 
-                const pendingAttendedCount = Object.entries(pending).filter(
-                  ([key, att]) => {
-                    const [sid, sessid] = key.split(":");
-                    return (
-                      String(sid) === String(row.student_id) &&
-                      rowSessionIds.has(sessid) &&
-                      att === true
-                    );
-                  },
-                ).length;
-
-                const pendingUnattendedCount = Object.entries(pending).filter(
-                  ([key, att]) => {
-                    const parts = key.split(":");
-                    const sid = parts[0],
-                      sessid = parts[1],
-                      d = parts[2];
-                    return (
-                      String(sid) === String(row.student_id) &&
-                      rowSessionIds.has(sessid) &&
-                      att === false &&
-                      row.attended_dates.has(d)
-                    );
-                  },
-                ).length;
+                let pendingDecrementDelta = 0;
+                for (const [key, status] of Object.entries(pending)) {
+                  const [sid, sessid, d] = key.split(":");
+                  if (
+                    String(sid) !== String(row.student_id) ||
+                    !rowSessionIds.has(sessid)
+                  )
+                    continue;
+                  const oldStatus = savedStatus(row, d);
+                  const oldDecrements = STATUS_CONFIG[oldStatus].decrements;
+                  const newDecrements = STATUS_CONFIG[status].decrements;
+                  if (newDecrements && !oldDecrements) pendingDecrementDelta += 1;
+                  else if (!newDecrements && oldDecrements)
+                    pendingDecrementDelta -= 1;
+                }
 
                 const attendedSoFar =
                   row.total_sessions != null
@@ -1177,8 +1231,7 @@ function AttendanceTable({ month, year, onSaved }) {
                         0,
                         row.total_sessions -
                           attendedSoFar -
-                          pendingAttendedCount +
-                          pendingUnattendedCount,
+                          pendingDecrementDelta,
                       )
                     : null;
 
@@ -1229,6 +1282,7 @@ function AttendanceTable({ month, year, onSaved }) {
                           />
                         );
                       }
+                      const cfg = STATUS_CONFIG[state];
                       return (
                         <td
                           key={d}
@@ -1236,21 +1290,10 @@ function AttendanceTable({ month, year, onSaved }) {
                         >
                           <button
                             onClick={() => toggleCell(row, d)}
-                            title={`${row.student_name} – ${d}`}
-                            className={`w-full h-9 text-sm font-bold transition-colors
-                            ${
-                              state === "attended"
-                                ? "bg-green-100 text-green-700 hover:bg-green-200"
-                                : state === "absent"
-                                  ? "bg-red-100 text-red-600 hover:bg-red-200"
-                                  : "hover:bg-slate-100 text-slate-300"
-                            }`}
+                            title={`${row.student_name} – ${d} – ${cfg.label}`}
+                            className={`w-full h-9 text-sm font-bold transition-colors ${cfg.cellClass}`}
                           >
-                            {state === "attended"
-                              ? "✓"
-                              : state === "absent"
-                                ? "✗"
-                                : "·"}
+                            {cfg.symbol}
                           </button>
                         </td>
                       );
@@ -1285,7 +1328,8 @@ function slotHours(sl) {
   return (eh * 60 + em - (sh * 60 + sm)) / 60;
 }
 
-function TeacherHoursTable({ month, year }) {
+function TeacherHoursTable() {
+  const { month, year, prev, next, label } = useMonthYear();
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -1395,6 +1439,18 @@ function TeacherHoursTable({ month, year }) {
     return h;
   }
 
+  // Only keep the days in the month where the selected teacher actually
+  // taught at least one slot — empty days are hidden from the table.
+  const workingDays = useMemo(
+    () =>
+      daysInMonth.filter((dt) => {
+        const dateStr = dt.toISOString().slice(0, 10);
+        const daySlots = slotsByDate[dateStr] ?? new Set();
+        return dayHours(daySlots) > 0;
+      }),
+    [daysInMonth, slotsByDate, timeSlots],
+  );
+
   const DAY_NAMES_VN = [
     "Chủ Nhật",
     "Thứ 2",
@@ -1428,6 +1484,41 @@ function TeacherHoursTable({ month, year }) {
           <p className="text-xs text-slate-400 mt-0.5">
             Hours taught per day, derived from attendance records.
           </p>
+          <div className="flex items-center gap-2 mt-2">
+            <button
+              onClick={prev}
+              className="p-1 rounded-md border border-slate-200 hover:bg-slate-50 text-slate-500"
+              title="Previous month"
+            >
+              <svg
+                className="w-3.5 h-3.5"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                viewBox="0 0 24 24"
+              >
+                <path d="M15 18l-6-6 6-6" />
+              </svg>
+            </button>
+            <p className="text-xs font-medium text-slate-600 min-w-[110px]">
+              {label}
+            </p>
+            <button
+              onClick={next}
+              className="p-1 rounded-md border border-slate-200 hover:bg-slate-50 text-slate-500"
+              title="Next month"
+            >
+              <svg
+                className="w-3.5 h-3.5"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                viewBox="0 0 24 24"
+              >
+                <path d="M9 18l6-6-6-6" />
+              </svg>
+            </button>
+          </div>
         </div>
         <div className="flex items-center gap-2 flex-wrap justify-end">
           <select
@@ -1504,113 +1595,109 @@ function TeacherHoursTable({ month, year }) {
             </div>
           </div>
 
-          <table className="w-full text-sm border border-slate-200 rounded-lg">
-            <thead>
-              <tr className="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide border-b border-slate-200">
-                <th className="px-3 py-2 text-left w-24">Day</th>
-                <th className="px-3 py-2 text-left w-28">Date</th>
-                {timeSlots.map((sl) => (
-                  <th
-                    key={`${sl.start_time}–${sl.end_time}`}
-                    className="px-2 py-2 text-center"
-                  >
-                    {sl.start_time.slice(0, 5)}–{sl.end_time.slice(0, 5)}
+          {workingDays.length === 0 ? (
+            <p className="text-sm text-slate-400">
+              No working days recorded for this teacher this month.
+            </p>
+          ) : (
+            <table className="w-full text-sm border border-slate-200 rounded-lg">
+              <thead>
+                <tr className="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide border-b border-slate-200">
+                  <th className="px-3 py-2 text-left w-24">Day</th>
+                  <th className="px-3 py-2 text-left w-28">Date</th>
+                  {timeSlots.map((sl) => (
+                    <th
+                      key={`${sl.start_time}–${sl.end_time}`}
+                      className="px-2 py-2 text-center"
+                    >
+                      {sl.start_time.slice(0, 5)}–{sl.end_time.slice(0, 5)}
+                    </th>
+                  ))}
+                  <th className="px-3 py-2 text-center font-bold text-slate-700 w-20">
+                    Giờ dạy
                   </th>
-                ))}
-                <th className="px-3 py-2 text-center font-bold text-slate-700 w-20">
-                  Giờ dạy
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {daysInMonth.map((dt) => {
-                const dateStr = dt.toISOString().slice(0, 10);
-                const daySlots = slotsByDate[dateStr] ?? new Set();
-                const hours = dayHours(daySlots);
-                const isWeekend = dt.getDay() === 0 || dt.getDay() === 6;
-                return (
-                  <tr
-                    key={dateStr}
-                    className={`border-t border-slate-100 ${isWeekend ? "bg-slate-50/60" : ""}`}
-                  >
-                    <td
-                      className={`px-3 py-1.5 ${hours > 0 ? "text-slate-700" : "text-slate-300"}`}
-                    >
-                      {DAY_NAMES_VN[dt.getDay()]}
-                    </td>
-                    <td
-                      className={`px-3 py-1.5 ${hours > 0 ? "text-slate-700" : "text-slate-300"}`}
-                    >
-                      {String(dt.getDate()).padStart(2, "0")}/
-                      {String(dt.getMonth() + 1).padStart(2, "0")}/
-                      {dt.getFullYear()}
-                    </td>
-                    {timeSlots.map((sl) => {
-                      const key = `${sl.start_time}–${sl.end_time}`;
-                      const taught = daySlots.has(key);
-                      const slot = visibleSlots.find(
-                        (s) =>
-                          s.date === dateStr &&
-                          `${s.start_time}–${s.end_time}` === key,
-                      );
-                      return (
-                        <td
-                          key={key}
-                          className="px-2 py-1.5 text-center"
-                          title={
-                            slot
-                              ? `${slot.class_name}${slot.subject ? ` (${slot.subject})` : ""}`
-                              : ""
-                          }
-                        >
-                          {taught ? (
-                            <span className="font-bold text-blue-600">
-                              {slotHours(sl) % 1 === 0
-                                ? slotHours(sl)
-                                : slotHours(sl).toFixed(1)}
-                            </span>
-                          ) : (
-                            <span className="text-slate-200">–</span>
-                          )}
-                        </td>
-                      );
-                    })}
-                    <td
-                      className={`px-3 py-1.5 text-center font-bold ${hours > 0 ? "text-slate-800" : "text-slate-200"}`}
-                    >
-                      {hours > 0
-                        ? hours % 1 === 0
-                          ? hours
-                          : hours.toFixed(1)
-                        : "0"}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-            <tfoot>
-              <tr className="border-t-2 border-slate-300 bg-slate-50 font-bold text-slate-700">
-                <td className="px-3 py-2" colSpan={2}>
-                  CỘNG
-                </td>
-                {timeSlots.map((sl) => {
-                  const key = `${sl.start_time}–${sl.end_time}`;
-                  const h = slotHourTotals[key] ?? 0;
+                </tr>
+              </thead>
+              <tbody>
+                {workingDays.map((dt) => {
+                  const dateStr = dt.toISOString().slice(0, 10);
+                  const daySlots = slotsByDate[dateStr] ?? new Set();
+                  const hours = dayHours(daySlots);
+                  const isWeekend = dt.getDay() === 0 || dt.getDay() === 6;
                   return (
-                    <td
-                      key={key}
-                      className="px-2 py-2 text-center text-blue-700"
+                    <tr
+                      key={dateStr}
+                      className={`border-t border-slate-100 ${isWeekend ? "bg-slate-50/60" : ""}`}
                     >
-                      {h % 1 === 0 ? h : h.toFixed(1)}
-                    </td>
+                      <td className="px-3 py-1.5 text-slate-700">
+                        {DAY_NAMES_VN[dt.getDay()]}
+                      </td>
+                      <td className="px-3 py-1.5 text-slate-700">
+                        {String(dt.getDate()).padStart(2, "0")}/
+                        {String(dt.getMonth() + 1).padStart(2, "0")}/
+                        {dt.getFullYear()}
+                      </td>
+                      {timeSlots.map((sl) => {
+                        const key = `${sl.start_time}–${sl.end_time}`;
+                        const taught = daySlots.has(key);
+                        const slot = visibleSlots.find(
+                          (s) =>
+                            s.date === dateStr &&
+                            `${s.start_time}–${s.end_time}` === key,
+                        );
+                        return (
+                          <td
+                            key={key}
+                            className="px-2 py-1.5 text-center"
+                            title={
+                              slot
+                                ? `${slot.class_name}${slot.subject ? ` (${slot.subject})` : ""}`
+                                : ""
+                            }
+                          >
+                            {taught ? (
+                              <span className="font-bold text-blue-600">
+                                {slotHours(sl) % 1 === 0
+                                  ? slotHours(sl)
+                                  : slotHours(sl).toFixed(1)}
+                              </span>
+                            ) : (
+                              <span className="text-slate-200">–</span>
+                            )}
+                          </td>
+                        );
+                      })}
+                      <td className="px-3 py-1.5 text-center font-bold text-slate-800">
+                        {hours % 1 === 0 ? hours : hours.toFixed(1)}
+                      </td>
+                    </tr>
                   );
                 })}
-                <td className="px-3 py-2 text-center text-blue-700">
-                  {totalHours % 1 === 0 ? totalHours : totalHours.toFixed(1)}
-                </td>
-              </tr>
-            </tfoot>
-          </table>
+              </tbody>
+              <tfoot>
+                <tr className="border-t-2 border-slate-300 bg-slate-50 font-bold text-slate-700">
+                  <td className="px-3 py-2" colSpan={2}>
+                    CỘNG
+                  </td>
+                  {timeSlots.map((sl) => {
+                    const key = `${sl.start_time}–${sl.end_time}`;
+                    const h = slotHourTotals[key] ?? 0;
+                    return (
+                      <td
+                        key={key}
+                        className="px-2 py-2 text-center text-blue-700"
+                      >
+                        {h % 1 === 0 ? h : h.toFixed(1)}
+                      </td>
+                    );
+                  })}
+                  <td className="px-3 py-2 text-center text-blue-700">
+                    {totalHours % 1 === 0 ? totalHours : totalHours.toFixed(1)}
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
+          )}
         </>
       )}
     </div>
@@ -2002,7 +2089,7 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* ── Month picker ── */}
+      {/* ── Month picker (Student Attendance) ── */}
       <div className="flex items-center gap-3 mt-8 mb-2">
         <button
           onClick={tableMonth.prev}
@@ -2042,7 +2129,7 @@ export default function Dashboard() {
         year={tableMonth.year}
         onSaved={refreshEnrollments}
       />
-      <TeacherHoursTable month={tableMonth.month} year={tableMonth.year} />
+      <TeacherHoursTable />
 
       <NoticesTable
         notices={notices}

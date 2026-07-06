@@ -1,6 +1,6 @@
-import { useEffect, useState, useRef } from "react"
+import { useEffect, useState, useRef, useMemo } from "react"
 import { useParams, Link } from "react-router-dom"
-import { getTeacherDetail } from "../api"
+import { getTeacherDetail, getDashboardTeacherHours } from "../api"
 
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 const HOUR_HEIGHT = 44
@@ -159,6 +159,263 @@ function WeeklyTimetable({ sessions }) {
     )
 }
 
+// ─── Month picker helper ──────────────────────────────────────────────────
+function useMonthYear() {
+    const today = new Date()
+    const [month, setMonth] = useState(today.getMonth() + 1)
+    const [year, setYear] = useState(today.getFullYear())
+    function prev() {
+        if (month === 1) {
+            setMonth(12)
+            setYear(y => y - 1)
+        } else setMonth(m => m - 1)
+    }
+    function next() {
+        if (month === 12) {
+            setMonth(1)
+            setYear(y => y + 1)
+        } else setMonth(m => m + 1)
+    }
+    const label = new Date(year, month - 1, 1).toLocaleString("default", {
+        month: "long",
+        year: "numeric",
+    })
+    return { month, year, prev, next, label }
+}
+
+function slotHours(sl) {
+    const [sh, sm] = sl.start_time.split(":").map(Number)
+    const [eh, em] = sl.end_time.split(":").map(Number)
+    return (eh * 60 + em - (sh * 60 + sm)) / 60
+}
+
+const DAY_NAMES_VN = ["Chủ Nhật", "Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7"]
+
+// ─── Teacher Hours table ────────────────────────────────────────────────────
+// Same underlying data as the Dashboard's Teacher Hours table, but scoped to
+// this one teacher directly — no teacher/subject picker needed since the
+// page already knows exactly who it is.
+function TeacherHoursTable({ teacherId }) {
+    const { month, year, prev, next, label } = useMonthYear()
+    const [slots, setSlots] = useState([])
+    const [loading, setLoading] = useState(true)
+    const [error, setError] = useState(null)
+
+    useEffect(() => {
+        setLoading(true)
+        setError(null)
+        getDashboardTeacherHours(month, year)
+            .then((data) => {
+                const row = data.find(r => String(r.teacher_id) === String(teacherId))
+                setSlots(row ? row.slots : [])
+            })
+            .catch((e) => setError(e.message))
+            .finally(() => setLoading(false))
+    }, [month, year, teacherId])
+
+    const daysInMonth = useMemo(() => {
+        const days = []
+        const d = new Date(year, month - 1, 1)
+        while (d.getMonth() === month - 1) {
+            days.push(new Date(d))
+            d.setDate(d.getDate() + 1)
+        }
+        return days
+    }, [year, month])
+
+    const timeSlots = useMemo(() => {
+        const seen = new Set()
+        const list = []
+        for (const sl of slots) {
+            const key = `${sl.start_time}–${sl.end_time}`
+            if (!seen.has(key)) {
+                seen.add(key)
+                list.push({ start_time: sl.start_time, end_time: sl.end_time })
+            }
+        }
+        return list.sort((a, b) => a.start_time.localeCompare(b.start_time))
+    }, [slots])
+
+    const slotsByDate = useMemo(() => {
+        const map = {}
+        for (const sl of slots) {
+            if (!map[sl.date]) map[sl.date] = new Set()
+            map[sl.date].add(`${sl.start_time}–${sl.end_time}`)
+        }
+        return map
+    }, [slots])
+
+    function dayHours(daySlots) {
+        let h = 0
+        for (const sl of timeSlots) {
+            const key = `${sl.start_time}–${sl.end_time}`
+            if (daySlots.has(key)) h += slotHours(sl)
+        }
+        return h
+    }
+
+    const slotHourTotals = useMemo(() => {
+        const totals = {}
+        for (const sl of timeSlots) {
+            const key = `${sl.start_time}–${sl.end_time}`
+            const count = Object.values(slotsByDate).filter(s => s.has(key)).length
+            totals[key] = count * slotHours(sl)
+        }
+        return totals
+    }, [timeSlots, slotsByDate])
+
+    const totalHours = useMemo(
+        () => Object.values(slotHourTotals).reduce((s, h) => s + h, 0),
+        [slotHourTotals],
+    )
+
+    // Only keep days where this teacher actually taught at least one slot.
+    const workingDays = useMemo(
+        () => daysInMonth.filter((dt) => {
+            const dateStr = dt.toISOString().slice(0, 10)
+            const daySlots = slotsByDate[dateStr] ?? new Set()
+            return dayHours(daySlots) > 0
+        }),
+        [daysInMonth, slotsByDate, timeSlots],
+    )
+
+    return (
+        <div className="bg-white border border-slate-200 rounded-xl p-6 mt-6">
+            <div className="flex items-start justify-between mb-4">
+                <div>
+                    <h2 className="text-lg font-semibold text-slate-900">Teacher Hours</h2>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                        Hours taught per day, derived from attendance records.
+                    </p>
+                    <div className="flex items-center gap-2 mt-2">
+                        <button
+                            onClick={prev}
+                            className="p-1 rounded-md border border-slate-200 hover:bg-slate-50 text-slate-500"
+                            title="Previous month"
+                        >
+                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                                <path d="M15 18l-6-6 6-6" />
+                            </svg>
+                        </button>
+                        <p className="text-xs font-medium text-slate-600 min-w-[110px]">{label}</p>
+                        <button
+                            onClick={next}
+                            className="p-1 rounded-md border border-slate-200 hover:bg-slate-50 text-slate-500"
+                            title="Next month"
+                        >
+                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                                <path d="M9 18l6-6-6-6" />
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            {loading ? (
+                <p className="text-sm text-slate-400">Loading teacher hours…</p>
+            ) : error ? (
+                <p className="text-sm text-red-500">{error}</p>
+            ) : slots.length === 0 ? (
+                <p className="text-sm text-slate-400">No teaching activity recorded this month.</p>
+            ) : (
+                <>
+                    <div className="flex items-center gap-6 mb-4 p-3 bg-slate-50 rounded-lg border border-slate-100">
+                        <div>
+                            <p className="text-xs text-slate-400">Total Hours This Month</p>
+                            <p className="text-2xl font-bold text-blue-600">
+                                {totalHours % 1 === 0 ? totalHours : totalHours.toFixed(1)}
+                            </p>
+                        </div>
+                        <div className="border-l border-slate-200 pl-4">
+                            <p className="text-xs text-slate-400">Sessions Taught</p>
+                            <p className="text-2xl font-bold text-slate-800">{slots.length}</p>
+                        </div>
+                    </div>
+
+                    {workingDays.length === 0 ? (
+                        <p className="text-sm text-slate-400">No working days recorded this month.</p>
+                    ) : (
+                        <table className="w-full text-sm border border-slate-200 rounded-lg">
+                            <thead>
+                                <tr className="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide border-b border-slate-200">
+                                    <th className="px-3 py-2 text-left w-24">Day</th>
+                                    <th className="px-3 py-2 text-left w-28">Date</th>
+                                    {timeSlots.map(sl => (
+                                        <th key={`${sl.start_time}–${sl.end_time}`} className="px-2 py-2 text-center">
+                                            {sl.start_time.slice(0, 5)}–{sl.end_time.slice(0, 5)}
+                                        </th>
+                                    ))}
+                                    <th className="px-3 py-2 text-center font-bold text-slate-700 w-20">Giờ dạy</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {workingDays.map(dt => {
+                                    const dateStr = dt.toISOString().slice(0, 10)
+                                    const daySlots = slotsByDate[dateStr] ?? new Set()
+                                    const hours = dayHours(daySlots)
+                                    const isWeekend = dt.getDay() === 0 || dt.getDay() === 6
+                                    return (
+                                        <tr key={dateStr} className={`border-t border-slate-100 ${isWeekend ? "bg-slate-50/60" : ""}`}>
+                                            <td className="px-3 py-1.5 text-slate-700">{DAY_NAMES_VN[dt.getDay()]}</td>
+                                            <td className="px-3 py-1.5 text-slate-700">
+                                                {String(dt.getDate()).padStart(2, "0")}/
+                                                {String(dt.getMonth() + 1).padStart(2, "0")}/
+                                                {dt.getFullYear()}
+                                            </td>
+                                            {timeSlots.map(sl => {
+                                                const key = `${sl.start_time}–${sl.end_time}`
+                                                const taught = daySlots.has(key)
+                                                const slot = slots.find(
+                                                    s => s.date === dateStr && `${s.start_time}–${s.end_time}` === key,
+                                                )
+                                                return (
+                                                    <td
+                                                        key={key}
+                                                        className="px-2 py-1.5 text-center"
+                                                        title={slot ? `${slot.class_name}${slot.subject ? ` (${slot.subject})` : ""}` : ""}
+                                                    >
+                                                        {taught ? (
+                                                            <span className="font-bold text-blue-600">
+                                                                {slotHours(sl) % 1 === 0 ? slotHours(sl) : slotHours(sl).toFixed(1)}
+                                                            </span>
+                                                        ) : (
+                                                            <span className="text-slate-200">–</span>
+                                                        )}
+                                                    </td>
+                                                )
+                                            })}
+                                            <td className="px-3 py-1.5 text-center font-bold text-slate-800">
+                                                {hours % 1 === 0 ? hours : hours.toFixed(1)}
+                                            </td>
+                                        </tr>
+                                    )
+                                })}
+                            </tbody>
+                            <tfoot>
+                                <tr className="border-t-2 border-slate-300 bg-slate-50 font-bold text-slate-700">
+                                    <td className="px-3 py-2" colSpan={2}>TỔNG CỘNG</td>
+                                    {timeSlots.map(sl => {
+                                        const key = `${sl.start_time}–${sl.end_time}`
+                                        const h = slotHourTotals[key] ?? 0
+                                        return (
+                                            <td key={key} className="px-2 py-2 text-center text-blue-700">
+                                                {h % 1 === 0 ? h : h.toFixed(1)}
+                                            </td>
+                                        )
+                                    })}
+                                    <td className="px-3 py-2 text-center text-blue-700">
+                                        {totalHours % 1 === 0 ? totalHours : totalHours.toFixed(1)}
+                                    </td>
+                                </tr>
+                            </tfoot>
+                        </table>
+                    )}
+                </>
+            )}
+        </div>
+    )
+}
+
 export default function TeacherDetail() {
     const { id } = useParams()
     const [teacher, setTeacher] = useState(null)
@@ -251,6 +508,8 @@ export default function TeacherDetail() {
                     )}
                 </div>
             </div>
+
+            <TeacherHoursTable teacherId={teacher.id} />
         </div>
     )
 }

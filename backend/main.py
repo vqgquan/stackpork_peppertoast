@@ -47,6 +47,28 @@ class DayOfWeekEnum(str, enum.Enum):
     saturday = "Saturday"
     sunday = "Sunday"
 
+class AttendanceStatusEnum(str, enum.Enum):
+    """Four possible states for a single (student, session, date) occurrence.
+    - present:            student attended. Burns one session from the pool.
+    - absent_notice:      student notified ahead of time they'd miss class.
+                           Does NOT burn a session.
+    - absent_no_notice:   student was a no-show with no notice. Burns one
+                           session from the pool (same as attending, since
+                           the slot was held for them).
+    - (no record at all): "No info" — the class hasn't happened yet, or
+                           nobody has taken roll call for it yet. Represented
+                           by the absence of an AttendanceRecord row, not an
+                           enum value."""
+    present = "present"
+    absent_notice = "absent_notice"
+    absent_no_notice = "absent_no_notice"
+
+# Statuses that consume a session from the enrollment's shared pool.
+SESSION_CONSUMING_STATUSES = {
+    AttendanceStatusEnum.present,
+    AttendanceStatusEnum.absent_no_notice,
+}
+
 # --- Constants ---
 ALLOWED_SUBJECTS = ["Guitar", "Guitar điện", "Piano", "Organ", "Trống", "Thanh nhạc"]
 
@@ -173,8 +195,10 @@ class SessionReview(Base):
 
 class AttendanceRecord(Base):
     """One row per (student, session, date) occurrence.
-    attended=True  → student was present; burns one from the shared enrollment pool.
-    attended=False → student was absent; does NOT burn a session.
+    status = Present            → student was present; burns one from the shared enrollment pool.
+    status = Absent_Notice      → student gave notice ahead of time; does NOT burn a session.
+    status = Absent_No_Notice   → student was a no-show with no notice; burns one from the pool.
+    (row doesn't exist)         → "No info": class hasn't happened yet / not recorded.
     teacher_id is denormalised here so teacher-hours reports don't need
     to join through ClassSession when the teacher may have changed."""
     __tablename__ = "attendance_records"
@@ -183,7 +207,7 @@ class AttendanceRecord(Base):
     session_id = Column(Integer, ForeignKey("class_sessions.id"), nullable=False)
     teacher_id = Column(Integer, ForeignKey("teachers.id"), nullable=True)
     attendance_date = Column(Date, nullable=False)
-    attended = Column(Boolean, nullable=False, default=True)
+    status = Column(Enum(AttendanceStatusEnum), nullable=False, default=AttendanceStatusEnum.present)
     note = Column(String, nullable=True)
     student = relationship("Student")
     session = relationship("ClassSession", back_populates="attendance_records")
@@ -302,11 +326,11 @@ class AttendanceCreate(BaseModel):
     session_id: int
     teacher_id: Optional[int] = None
     attendance_date: date
-    attended: bool = True
+    status: AttendanceStatusEnum = AttendanceStatusEnum.present
     note: Optional[str] = None
 
 class AttendanceUpdate(BaseModel):
-    attended: Optional[bool] = None
+    status: Optional[AttendanceStatusEnum] = None
     note: Optional[str] = None
     teacher_id: Optional[int] = None
 
@@ -316,7 +340,7 @@ class AttendanceOut(BaseModel):
     session_id: int
     teacher_id: Optional[int] = None
     attendance_date: date
-    attended: bool
+    status: AttendanceStatusEnum
     note: Optional[str] = None
     class Config: from_attributes = True
 
@@ -519,7 +543,13 @@ class AttendanceRowOut(BaseModel):
     """One row per enrollment in the Student Attendance dashboard table.
     A single enrollment may cover multiple session slots (shared pool).
     date_session_map maps each occurrence date to its specific session_id
-    so the UI knows which session to write the attendance record against."""
+    so the UI knows which session to write the attendance record against.
+
+    Each occurrence date falls into exactly one of four buckets:
+      - present_dates:          status = Present
+      - absent_notice_dates:    status = Absent_Notice (no deduction)
+      - absent_no_notice_dates: status = Absent_No_Notice
+      - (none of the above):    "No info" — not recorded yet."""
     enrollment_id: int
     student_id: int
     student_name: str
@@ -545,9 +575,10 @@ class AttendanceRowOut(BaseModel):
     occurrence_dates: list[date]
     # date string -> session_id (which slot this date belongs to)
     date_session_map: dict[str, int]
-    # Sets of dates with attendance records
-    attended_dates: set[date]
-    absent_dates: set[date]
+    # Sets of dates by attendance status (see class docstring above)
+    present_dates: set[date]
+    absent_notice_dates: set[date]
+    absent_no_notice_dates: set[date]
 
     class Config:
         from_attributes = True
@@ -591,19 +622,21 @@ def find_enrollment_for_attendance(db: Session, student_id: int, session_id: int
     return None
 
 def count_attended_sessions(db: Session, enrollment: Enrollment) -> int:
-    """Count ALL attended records across ALL session slots in this enrollment."""
+    """Count ALL session-consuming records (Present or Absent_No_Notice)
+    across ALL session slots in this enrollment. Absent_Notice and "no
+    info" do not consume a session."""
     session_ids = [es.session_id for es in enrollment.enrollment_sessions]
     if not session_ids:
         return 0
     return db.query(AttendanceRecord).filter(
         AttendanceRecord.student_id == enrollment.student_id,
         AttendanceRecord.session_id.in_(session_ids),
-        AttendanceRecord.attended == True,
+        AttendanceRecord.status.in_(list(SESSION_CONSUMING_STATUSES)),
     ).count()
 
 def recompute_remaining(db: Session, enrollment: Optional[Enrollment]):
-    """Recompute remaining_sessions = total_sessions minus attended count
-    across all slots in the enrollment."""
+    """Recompute remaining_sessions = total_sessions minus session-consuming
+    count across all slots in the enrollment."""
     if enrollment is None:
         return
     if enrollment.total_sessions is not None:
@@ -1250,7 +1283,7 @@ def bulk_upsert_attendance(records: list[AttendanceCreate], db: Session = Depend
             AttendanceRecord.attendance_date == payload.attendance_date,
         ).first()
         if existing:
-            existing.attended = payload.attended
+            existing.status = payload.status
             existing.note = payload.note
             if payload.teacher_id is not None:
                 existing.teacher_id = payload.teacher_id
@@ -1347,6 +1380,23 @@ def dashboard_attendance(
                 occurrence_date_set.add(d)
                 date_session_map[str(d)] = s.id
 
+        # Attendance records for this enrollment across all its slots this month.
+        # Fetched before the occurrence_date_set check below, because a record
+        # can exist on a date that doesn't match the session's recurring
+        # day-of-week (e.g. a make-up class, or roll call taken on an
+        # off-pattern date) — those dates still need to show up as columns.
+        all_session_ids = [es.session_id for es in e.enrollment_sessions]
+        att_records = db.query(AttendanceRecord).filter(
+            AttendanceRecord.student_id == e.student_id,
+            AttendanceRecord.session_id.in_(all_session_ids),
+            AttendanceRecord.attendance_date >= month_start,
+            AttendanceRecord.attendance_date <= month_end,
+        ).all()
+        for r in att_records:
+            if r.attendance_date not in occurrence_date_set:
+                occurrence_date_set.add(r.attendance_date)
+                date_session_map[str(r.attendance_date)] = r.session_id
+
         if not occurrence_date_set:
             continue
 
@@ -1371,16 +1421,9 @@ def dashboard_attendance(
             for es in sorted_es
         ]
 
-        # Attendance records for this enrollment across all its slots this month
-        all_session_ids = [es.session_id for es in e.enrollment_sessions]
-        att_records = db.query(AttendanceRecord).filter(
-            AttendanceRecord.student_id == e.student_id,
-            AttendanceRecord.session_id.in_(all_session_ids),
-            AttendanceRecord.attendance_date >= month_start,
-            AttendanceRecord.attendance_date <= month_end,
-        ).all()
-        attended_dates = {r.attendance_date for r in att_records if r.attended}
-        absent_dates   = {r.attendance_date for r in att_records if not r.attended}
+        present_dates = {r.attendance_date for r in att_records if r.status == AttendanceStatusEnum.present}
+        absent_notice_dates = {r.attendance_date for r in att_records if r.status == AttendanceStatusEnum.absent_notice}
+        absent_no_notice_dates = {r.attendance_date for r in att_records if r.status == AttendanceStatusEnum.absent_no_notice}
 
         rows.append(AttendanceRowOut(
             enrollment_id=e.id,
@@ -1404,8 +1447,9 @@ def dashboard_attendance(
             schedules=schedules,
             occurrence_dates=sorted(occurrence_date_set),
             date_session_map=date_session_map,
-            attended_dates=attended_dates,
-            absent_dates=absent_dates,
+            present_dates=present_dates,
+            absent_notice_dates=absent_notice_dates,
+            absent_no_notice_dates=absent_no_notice_dates,
         ))
 
     rows.sort(key=lambda r: r.student_name)
@@ -1426,12 +1470,15 @@ def dashboard_teacher_hours(
     else:
         month_end = date(y, m + 1, 1) - timedelta(days=1)
 
+    # Any attendance record — regardless of status — means roll call was
+    # taken for that date/session, i.e. the class actually took place.
+    # (Present and both Absent statuses all imply the slot was held;
+    # only the total absence of a record means "hasn't happened yet".)
     records = (
         db.query(AttendanceRecord)
         .filter(
             AttendanceRecord.attendance_date >= month_start,
             AttendanceRecord.attendance_date <= month_end,
-            AttendanceRecord.attended == True,
             AttendanceRecord.teacher_id != None,
         )
         .all()
