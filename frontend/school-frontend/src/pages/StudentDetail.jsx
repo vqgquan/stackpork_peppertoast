@@ -11,6 +11,7 @@ import {
   getStudentReviews,
   createStudentReview,
   deleteReview,
+  getAttendance,
 } from "../api";
 
 const DAYS = [
@@ -21,6 +22,38 @@ const TOTAL_HOURS = 24;
 const GUTTER_WIDTH = 52;
 const PAYMENT_METHODS = ["Tiền Mặt", "Chuyển khoản", "Pos"];
 const NO_SUBJECT_LABEL = "Other";
+
+// ─── Attendance status display config (read-only) ─────────────────────────
+// Matches the same 4-state model used in the Dashboard / Class Detail roll
+// call: Present and Absent (No Notice) consume a session, Absent (Notice)
+// does not. There's no "no info" row here since we only ever render rows
+// for records that actually exist.
+const ATTENDANCE_STATUS_CONFIG = {
+  present: {
+    label: "Present",
+    symbol: "✓",
+    badgeClass: "bg-green-50 text-green-700 border border-green-200",
+  },
+  absent_notice: {
+    label: "Absent (Notice)",
+    symbol: "N",
+    badgeClass: "bg-amber-50 text-amber-700 border border-amber-200",
+  },
+  absent_no_notice: {
+    label: "Absent (No Notice)",
+    symbol: "✗",
+    badgeClass: "bg-red-50 text-red-600 border border-red-200",
+  },
+};
+function attendanceStatusConfig(status) {
+  return (
+    ATTENDANCE_STATUS_CONFIG[status] ?? {
+      label: status,
+      symbol: "?",
+      badgeClass: "bg-slate-100 text-slate-600 border border-slate-200",
+    }
+  );
+}
 
 function toMinutes(t) {
   const [h, m] = t.split(":").map(Number);
@@ -39,6 +72,33 @@ function hourLabel(h) {
 
 function durationMinutes(s) {
   return toMinutes(s.end_time) - toMinutes(s.start_time);
+}
+
+const DAY_TO_INDEX = {
+  Monday: 0, Tuesday: 1, Wednesday: 2, Thursday: 3, Friday: 4, Saturday: 5, Sunday: 6,
+};
+
+function toISODate(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+// All weekly occurrences of `dayOfWeek` between startDate and endDate (inclusive).
+function occurrenceDatesInRange(dayOfWeek, startDate, endDate) {
+  if (startDate > endDate) return [];
+  const target = DAY_TO_INDEX[dayOfWeek];
+  const startIdx = (startDate.getDay() + 6) % 7; // Monday = 0
+  const delta = (target - startIdx + 7) % 7;
+  const current = new Date(startDate);
+  current.setDate(current.getDate() + delta);
+  const dates = [];
+  while (current <= endDate) {
+    dates.push(new Date(current));
+    current.setDate(current.getDate() + 7);
+  }
+  return dates;
 }
 
 function mostRecentDateFor(dayOfWeek) {
@@ -227,6 +287,16 @@ export default function StudentDetail() {
   const [addSubmitting, setAddSubmitting] = useState(false);
   const [addError, setAddError] = useState(null);
 
+  // Attendance History filters (Subject > Class), month navigation, and read-only data
+  const [attSubject, setAttSubject] = useState("");
+  const [attClassId, setAttClassId] = useState("");
+  const [attMonth, setAttMonth] = useState(() => new Date().getMonth() + 1);
+  const [attYear, setAttYear] = useState(() => new Date().getFullYear());
+  const [attRecords, setAttRecords] = useState([]);
+  const [attLoading, setAttLoading] = useState(false);
+  const [attError, setAttError] = useState(null);
+  const [openAttCell, setOpenAttCell] = useState(null); // { date, session_id } | null
+
   function loadStudent() {
     return getStudentDetail(id).then((data) => setStudent(data));
   }
@@ -330,6 +400,165 @@ export default function StudentDetail() {
     }
     return Array.from(map.values());
   }, [student]);
+
+  // Flattened past-enrollment history (memoised so it's available before the
+  // early-return checks below and can be reused by the attendance grid).
+  const pastEnrollments = useMemo(() => (student ? (student.past_enrollments ?? []) : []), [student]);
+
+  // ─── Attendance History: classes (active or past) this student has ever
+  // been linked to, grouped by subject, each carrying every session_id
+  // (weekly slot) tied to that class so we can pull the full attendance
+  // history regardless of whether the enrollment is still active.
+  const attendanceClasses = useMemo(() => {
+    if (!student) return [];
+    const map = new Map(); // class_id -> { class_id, class_name, subject, session_ids: Set, sessionMeta: Map }
+    const upsert = (classId, className, subject, sessionId, meta) => {
+      if (!map.has(classId)) {
+        map.set(classId, {
+          class_id: classId,
+          class_name: className,
+          subject: subject || NO_SUBJECT_LABEL,
+          session_ids: new Set(),
+        });
+      }
+      if (sessionId != null) map.get(classId).session_ids.add(sessionId);
+    };
+    student.sessions.forEach((s) =>
+      upsert(s.class_id, s.class_name, s.subject, s.session_id),
+    );
+    (student.past_enrollments ?? []).forEach((p) =>
+      p.slots.forEach((s) =>
+        upsert(s.class_id, s.class_name, s.subject, s.session_id),
+      ),
+    );
+    return Array.from(map.values()).map((g) => ({
+      ...g,
+      session_ids: Array.from(g.session_ids),
+    }));
+  }, [student]);
+
+  const attendanceSubjects = useMemo(() => {
+    const set = new Set(attendanceClasses.map((c) => c.subject));
+    return Array.from(set).sort();
+  }, [attendanceClasses]);
+
+  function attendanceClassesForSubject(subject) {
+    return attendanceClasses.filter((c) => c.subject === subject);
+  }
+
+  const selectedAttClass = useMemo(
+    () => attendanceClasses.find((c) => String(c.class_id) === String(attClassId)) ?? null,
+    [attendanceClasses, attClassId],
+  );
+
+  // Resolve the underlying enrollment (active, else most recent past) behind
+  // the selected class, so the read-only grid can show its pack size, price,
+  // and per-slot schedule alongside the attendance symbols.
+  const selectedEnrollmentInfo = useMemo(() => {
+    if (!selectedAttClass) return null;
+    const active = enrollmentGroups.find((g) => String(g.class_id) === String(selectedAttClass.class_id));
+    if (active) {
+      return {
+        enrolled_date: active.enrolled_date,
+        total_sessions: active.total_sessions,
+        remaining_sessions: active.remaining_sessions,
+        price: active.price,
+        slots: active.slots,
+      };
+    }
+    const past = pastEnrollments
+      .filter((p) => p.slots.some((s) => String(s.class_id) === String(selectedAttClass.class_id)))
+      .sort((a, b) => (b.end_date || b.enrolled_date).localeCompare(a.end_date || a.enrolled_date))[0];
+    if (past) {
+      return {
+        enrolled_date: past.enrolled_date,
+        total_sessions: past.total_sessions,
+        remaining_sessions: past.remaining_sessions,
+        price: past.price,
+        slots: past.slots,
+      };
+    }
+    return null;
+  }, [selectedAttClass, enrollmentGroups, pastEnrollments]);
+
+  // All date columns to display for the current month: every scheduled
+  // occurrence of each slot from the enrollment date onward, plus any date
+  // that happens to have an actual attendance record (e.g. a make-up class).
+  const attDateColumns = useMemo(() => {
+    if (!selectedEnrollmentInfo) return [];
+    const monthStart = new Date(attYear, attMonth - 1, 1);
+    const monthEnd = new Date(attYear, attMonth, 0);
+    const enrollDate = selectedEnrollmentInfo.enrolled_date
+      ? new Date(selectedEnrollmentInfo.enrolled_date + "T00:00:00")
+      : monthStart;
+    const rangeStart = enrollDate > monthStart ? enrollDate : monthStart;
+    const map = new Map(); // dateStr -> session_id
+    (selectedEnrollmentInfo.slots || []).forEach((slot) => {
+      occurrenceDatesInRange(slot.day_of_week, rangeStart, monthEnd).forEach((d) => {
+        map.set(toISODate(d), slot.session_id);
+      });
+    });
+    attRecords.forEach((r) => {
+      if (!map.has(r.attendance_date)) map.set(r.attendance_date, r.session_id);
+    });
+    return Array.from(map.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([date, session_id]) => ({ date, session_id }));
+  }, [selectedEnrollmentInfo, attMonth, attYear, attRecords]);
+
+  function attStatusFor(dateStr, sessionId) {
+    const rec = attRecords.find((r) => r.attendance_date === dateStr && r.session_id === sessionId);
+    return rec ? rec.status : "none";
+  }
+  function attNoteFor(dateStr, sessionId) {
+    const rec = attRecords.find((r) => r.attendance_date === dateStr && r.session_id === sessionId);
+    return rec?.note || null;
+  }
+
+  function attPrevMonth() {
+    if (attMonth === 1) { setAttMonth(12); setAttYear((y) => y - 1); }
+    else setAttMonth((m) => m - 1);
+  }
+  function attNextMonth() {
+    if (attMonth === 12) { setAttMonth(1); setAttYear((y) => y + 1); }
+    else setAttMonth((m) => m + 1);
+  }
+
+  function updateAttSubject(value) {
+    setAttSubject(value);
+    setAttClassId("");
+    setAttRecords([]);
+    setAttError(null);
+  }
+
+  function updateAttClass(value) {
+    setAttClassId(value);
+  }
+
+  useEffect(() => {
+    if (!selectedEnrollmentInfo || !selectedEnrollmentInfo.slots?.length) {
+      setAttRecords([]);
+      return;
+    }
+    const sessionIds = [...new Set(selectedEnrollmentInfo.slots.map((s) => s.session_id))];
+    const monthStart = new Date(attYear, attMonth - 1, 1);
+    const monthEnd = new Date(attYear, attMonth, 0);
+    setAttLoading(true);
+    setAttError(null);
+    Promise.all(
+      sessionIds.map((sessionId) =>
+        getAttendance({
+          student_id: Number(id),
+          session_id: sessionId,
+          date_from: toISODate(monthStart),
+          date_to: toISODate(monthEnd),
+        }),
+      ),
+    )
+      .then((lists) => setAttRecords(lists.flat()))
+      .catch((e) => setAttError(e.message))
+      .finally(() => setAttLoading(false));
+  }, [selectedEnrollmentInfo, attMonth, attYear, id]);
 
   function updateDraft(field, value) {
     setDraft((prev) => {
@@ -515,12 +744,11 @@ export default function StudentDetail() {
   if (error) return <p className="p-8 text-red-500">{error}</p>;
   if (!student) return null;
 
-  const pastEnrollments = student.past_enrollments ?? [];
-
   const classOptions = draft.subject ? classesForSubject(draft.subject) : [];
   const sessionOptions = draft.class_id ? sessionsForClass(draft.class_id) : [];
   const reviewClassOptions = reviewDraft.subject ? reviewClassesForSubject(reviewDraft.subject) : [];
   const reviewSessionOptions = reviewDraft.class_id ? reviewSessionsForClass(reviewDraft.class_id) : [];
+  const attClassOptions = attSubject ? attendanceClassesForSubject(attSubject) : [];
 
   return (
     <div className="p-8 w-full">
@@ -925,6 +1153,227 @@ export default function StudentDetail() {
                 </div>
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* Attendance History (read-only) */}
+      <div className="bg-white border border-slate-200 rounded-xl p-6 mb-6">
+        <h2 className="text-lg font-semibold text-slate-900 mb-1">Attendance History</h2>
+        <p className="text-xs text-slate-400 mb-4">
+          Read-only record of past attendance. Select a subject and class, then browse by month.
+        </p>
+
+        <div className="grid grid-cols-2 gap-2 mb-4 max-w-md">
+          <div>
+            <label className={labelClass}>Subject</label>
+            <select
+              value={attSubject}
+              onChange={(e) => updateAttSubject(e.target.value)}
+              className={inputClass}
+            >
+              <option value="">— Select —</option>
+              {attendanceSubjects.map((s) => (
+                <option key={s} value={s}>{s}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className={labelClass}>Class</label>
+            <select
+              value={attClassId}
+              onChange={(e) => updateAttClass(e.target.value)}
+              disabled={!attSubject}
+              className={inputClass}
+            >
+              <option value="">— Select —</option>
+              {attClassOptions.map((c) => (
+                <option key={c.class_id} value={c.class_id}>{c.class_name}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        {attendanceClasses.length === 0 ? (
+          <p className="text-sm text-slate-400 italic">
+            This student has no enrollment history to show attendance for.
+          </p>
+        ) : !attClassId ? (
+          <p className="text-sm text-slate-400 italic">
+            Choose a subject and class to view attendance history.
+          </p>
+        ) : !selectedEnrollmentInfo ? (
+          <p className="text-sm text-slate-400 italic">
+            No enrollment record found for this class.
+          </p>
+        ) : (
+          <>
+            {/* Month navigation */}
+            <div className="flex items-center gap-3 mb-4">
+              <button
+                onClick={attPrevMonth}
+                className="p-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 text-slate-500"
+                title="Previous month"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                  <path d="M15 18l-6-6 6-6" />
+                </svg>
+              </button>
+              <span className="text-sm font-semibold text-slate-800 min-w-[130px] text-center">
+                {new Date(attYear, attMonth - 1, 1).toLocaleString("default", { month: "long", year: "numeric" })}
+              </span>
+              <button
+                onClick={attNextMonth}
+                className="p-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 text-slate-500"
+                title="Next month"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                  <path d="M9 18l6-6-6-6" />
+                </svg>
+              </button>
+            </div>
+
+            {/* Legend */}
+            <div className="flex flex-wrap items-center gap-4 mb-4 p-3 bg-slate-50 rounded-lg border border-slate-100">
+              {Object.entries(ATTENDANCE_STATUS_CONFIG).map(([key, cfg]) => (
+                <div key={key} className="flex items-center gap-1.5">
+                  <span className={`w-5 h-5 flex items-center justify-center rounded text-[11px] font-bold ${cfg.badgeClass}`}>
+                    {cfg.symbol}
+                  </span>
+                  <span className="text-xs text-slate-600">{cfg.label}</span>
+                </div>
+              ))}
+              <div className="flex items-center gap-1.5">
+                <span className="w-5 h-5 flex items-center justify-center rounded text-[11px] font-bold bg-slate-100 text-slate-400 border border-slate-200">
+                  −
+                </span>
+                <span className="text-xs text-slate-600">No Info</span>
+              </div>
+              <span className="text-xs text-slate-400 ml-auto">Click a cell for details</span>
+            </div>
+
+            {attLoading ? (
+              <p className="text-sm text-slate-400">Loading attendance…</p>
+            ) : attError ? (
+              <p className="text-sm text-red-500">{attError}</p>
+            ) : attDateColumns.length === 0 ? (
+              <p className="text-sm text-slate-400">No sessions scheduled this month for this class.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table
+                  className="text-sm border border-slate-200 rounded-lg"
+                  style={{ minWidth: `${520 + attDateColumns.length * 56}px` }}
+                >
+                  <thead>
+                    <tr className="bg-slate-50 text-left text-xs text-slate-500 uppercase tracking-wide border-b border-slate-200">
+                      <th className="px-3 py-2 min-w-[210px]">Schedule</th>
+                      <th className="px-3 py-2 min-w-[90px]">Subject</th>
+                      <th className="px-3 py-2 min-w-[130px]">Teacher</th>
+                      {attDateColumns.map((col, i) => {
+                        const dt = new Date(col.date + "T00:00:00");
+                        return (
+                          <th key={col.date} className="py-2 w-14 text-center">
+                            <div className="text-sm font-bold text-slate-700 leading-tight">{i + 1}</div>
+                            <div className="text-[10px] font-normal text-slate-500 leading-tight">
+                              {String(dt.getDate()).padStart(2, "0")}/{String(dt.getMonth() + 1).padStart(2, "0")}
+                            </div>
+                          </th>
+                        );
+                      })}
+                      <th className="px-2 py-2 w-16 text-center">Total</th>
+                      <th className="px-2 py-2 w-16 text-center">Left</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr className="border-t border-slate-100">
+                      <td className="px-3 py-2 text-xs text-slate-500 leading-snug align-middle">
+                        {selectedEnrollmentInfo.slots
+                          .slice()
+                          .sort(
+                            (a, b) =>
+                              DAYS.indexOf(a.day_of_week) - DAYS.indexOf(b.day_of_week) ||
+                              a.start_time.localeCompare(b.start_time),
+                          )
+                          .map((s) => `${s.day_of_week.slice(0, 3)} ${formatTime(s.start_time)}–${formatTime(s.end_time)}`)
+                          .join(" & ")}
+                      </td>
+                      <td className="px-3 py-2 align-middle">
+                        {selectedAttClass.subject && (
+                          <span className="text-xs px-1.5 py-0.5 rounded-full bg-purple-50 text-purple-700 font-medium">
+                            {selectedAttClass.subject}
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2 text-xs text-slate-500 align-middle">
+                        {[...new Set(selectedEnrollmentInfo.slots.map((s) => s.teacher_name).filter(Boolean))].join(", ") || "—"}
+                      </td>
+                      {attDateColumns.map((col) => {
+                        const status = attStatusFor(col.date, col.session_id);
+                        const isNone = status === "none";
+                        const cfg = attendanceStatusConfig(status);
+                        return (
+                          <td key={col.date} className="w-14 text-center border-l border-slate-100 p-0 align-middle">
+                            <button
+                              onClick={() => setOpenAttCell({ date: col.date, session_id: col.session_id })}
+                              title={`${col.date} — ${cfg.label}`}
+                              className={`w-full h-9 flex items-center justify-center text-base font-bold transition-colors ${
+                                isNone
+                                  ? "bg-slate-50 text-slate-300 hover:bg-slate-100"
+                                  : `${cfg.badgeClass} hover:brightness-95`
+                              }`}
+                            >
+                              {isNone ? "−" : cfg.symbol}
+                            </button>
+                          </td>
+                        );
+                      })}
+                      <td className="px-2 py-2 text-center text-sm font-semibold text-slate-700 align-middle">
+                        {selectedEnrollmentInfo.total_sessions ?? "—"}
+                      </td>
+                      <td className="px-2 py-2 text-center text-sm font-semibold text-slate-700 align-middle">
+                        {selectedEnrollmentInfo.remaining_sessions ?? "—"}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* Attendance cell note popup */}
+      {openAttCell && (
+        <div
+          className="fixed inset-0 bg-slate-900/40 flex items-center justify-center z-50 p-4"
+          onClick={() => setOpenAttCell(null)}
+        >
+          <div
+            className="bg-white rounded-xl shadow-xl max-w-lg w-full p-6"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between mb-4">
+              <div>
+                <p className="text-xs text-slate-400 mb-1">{openAttCell.date}</p>
+                <h3 className="text-lg font-semibold text-slate-900">
+                  {attendanceStatusConfig(attStatusFor(openAttCell.date, openAttCell.session_id)).label}
+                </h3>
+              </div>
+              <button
+                onClick={() => setOpenAttCell(null)}
+                className="text-slate-400 hover:text-slate-600 flex-shrink-0"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                  <path d="M18 6 6 18M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <div className="border-t border-slate-100 pt-4">
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Note</p>
+              <p className="text-sm text-slate-700 whitespace-pre-wrap leading-relaxed">
+                {attNoteFor(openAttCell.date, openAttCell.session_id) || "No note recorded for this session."}
+              </p>
+            </div>
           </div>
         </div>
       )}
