@@ -1471,10 +1471,19 @@ function TeacherHoursTable() {
 
   // Only keep the days in the month where the selected teacher actually
   // taught at least one slot — empty days are hidden from the table.
+  //
+  // FIX: previously used `dt.toISOString().slice(0, 10)` here, which
+  // converts the local-midnight Date to UTC first. In timezones ahead of
+  // UTC (e.g. UTC+7), that shifts the date backward by one day, so a
+  // day's hours were being looked up under the *previous* calendar date
+  // while the row label (built from the untouched local Date below)
+  // still showed the correct date. Using the timezone-safe
+  // `toISODateString` helper (already used elsewhere in this file for
+  // `weekDates`) keeps the lookup key in sync with the label.
   const workingDays = useMemo(
     () =>
       daysInMonth.filter((dt) => {
-        const dateStr = dt.toISOString().slice(0, 10);
+        const dateStr = toISODateString(dt);
         return dayTotalHours(dateStr) > 0;
       }),
     [daysInMonth, slotsByDateFull],
@@ -1677,7 +1686,9 @@ function TeacherHoursTable() {
               </thead>
               <tbody>
                 {workingDays.map((dt) => {
-                  const dateStr = dt.toISOString().slice(0, 10);
+                  // FIX: timezone-safe date string (see note above at
+                  // workingDays) instead of dt.toISOString().slice(0, 10).
+                  const dateStr = toISODateString(dt);
                   const total = dayTotalHours(dateStr);
                   const isWeekend = dt.getDay() === 0 || dt.getDay() === 6;
                   const isExpanded = expandedDates.has(dateStr);
