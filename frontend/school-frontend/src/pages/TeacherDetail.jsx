@@ -7,6 +7,19 @@ const HOUR_HEIGHT = 44
 const TOTAL_HOURS = 24
 const GUTTER_WIDTH = 52
 
+const SUBJECT_COLORS = {
+    Guitar: { badge: "bg-amber-50 text-amber-700" },
+    "Guitar điện": { badge: "bg-orange-50 text-orange-700" },
+    Piano: { badge: "bg-blue-50 text-blue-700" },
+    Organ: { badge: "bg-purple-50 text-purple-700" },
+    Trống: { badge: "bg-rose-50 text-rose-700" },
+    "Thanh nhạc": { badge: "bg-emerald-50 text-emerald-700" },
+}
+const DEFAULT_SUBJECT_COLOR = { badge: "bg-slate-50 text-slate-700" }
+function colorFor(subject) {
+    return SUBJECT_COLORS[subject] || DEFAULT_SUBJECT_COLOR
+}
+
 function toMinutes(t) {
     const [h, m] = t.split(":").map(Number)
     return h * 60 + m
@@ -60,7 +73,100 @@ function layoutDayEvents(events) {
     return result
 }
 
-function WeeklyTimetable({ sessions }) {
+// ─── Session modal ──────────────────────────────────────────────────────
+// Same shape as the Dashboard's SessionModal, minus the teacher-reassignment
+// section (we're already on that teacher's own page, so editing it here
+// wouldn't make sense). Shows the enrolled roster and a link to the class.
+function SessionModal({ session, onClose }) {
+    if (!session) return null
+    const colors = colorFor(session.subject)
+    const students = session.students ?? []
+
+    return (
+        <div
+            className="fixed inset-0 bg-slate-900/40 flex items-center justify-center z-50 p-4"
+            onClick={onClose}
+        >
+            <div
+                className="bg-white rounded-xl shadow-xl max-w-md w-full max-h-[85vh] overflow-y-auto"
+                onClick={(e) => e.stopPropagation()}
+            >
+                <div className="p-5 border-b border-slate-100 flex items-start justify-between">
+                    <div>
+                        <h3 className="text-lg font-semibold text-slate-900">
+                            {session.class_name}
+                        </h3>
+                        <div className="flex items-center gap-2 mt-1.5">
+                            {session.subject && (
+                                <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${colors.badge}`}>
+                                    {session.subject}
+                                </span>
+                            )}
+                            <span className="text-xs text-slate-400">
+                                {session.day_of_week} · {formatTime(session.start_time)}–{formatTime(session.end_time)}
+                            </span>
+                        </div>
+                    </div>
+                    <button onClick={onClose} className="text-slate-400 hover:text-slate-600 flex-shrink-0">
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                            <path d="M18 6 6 18M6 6l12 12" />
+                        </svg>
+                    </button>
+                </div>
+
+                <div className="p-5 space-y-5">
+                    {session.class_id && (
+                        <Link
+                            to={`/classes/${session.class_id}`}
+                            className="text-xs text-blue-600 hover:underline font-medium inline-flex items-center gap-1"
+                        >
+                            View class
+                            <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                                <path d="M9 18l6-6-6-6" />
+                            </svg>
+                        </Link>
+                    )}
+
+                    <div>
+                        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">
+                            Students ({students.length})
+                        </p>
+                        {students.length === 0 ? (
+                            <p className="text-sm text-slate-400">
+                                No students enrolled in this session yet.
+                            </p>
+                        ) : (
+                            <div className="space-y-1.5">
+                                {students.map((s) => (
+                                    <Link
+                                        key={s.id}
+                                        to={`/students/${s.id}`}
+                                        className="flex items-center justify-between border border-slate-100 rounded-lg px-3 py-2 hover:bg-slate-50 transition-colors"
+                                    >
+                                        <span className="text-sm text-blue-700 hover:underline">
+                                            {s.name}
+                                        </span>
+                                        <svg
+                                            className="w-3.5 h-3.5 text-slate-300"
+                                            fill="none"
+                                            stroke="currentColor"
+                                            strokeWidth="2"
+                                            viewBox="0 0 24 24"
+                                        >
+                                            <path d="M9 18l6-6-6-6" />
+                                        </svg>
+                                    </Link>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                </div>
+            </div>
+        </div>
+    )
+}
+
+function WeeklyTimetable({ sessions, onSessionClick }) {
     const scrollRef = useRef(null)
 
     useEffect(() => {
@@ -78,10 +184,13 @@ function WeeklyTimetable({ sessions }) {
         if (eventsByDay[s.day_of_week]) {
             eventsByDay[s.day_of_week].push({
                 id: s.session_id,
+                class_id: s.class_id,
                 class_name: s.class_name,
                 subject: s.subject,
+                day_of_week: s.day_of_week,
                 start_time: s.start_time,
                 end_time: s.end_time,
+                students: s.students,
                 startMin,
                 endMin,
             })
@@ -129,8 +238,10 @@ function WeeklyTimetable({ sessions }) {
                                         const widthPct = 100 / e.trackCount
                                         const leftPct = e.track * widthPct
                                         return (
-                                            <div key={e.id}
-                                                className="absolute bg-violet-100 border border-violet-300 rounded-md px-1.5 py-1 overflow-hidden hover:z-10 hover:shadow-md transition-shadow"
+                                            <button
+                                                key={e.id}
+                                                onClick={() => onSessionClick?.(e)}
+                                                className="absolute bg-violet-100 border border-violet-300 rounded-md px-1.5 py-1 overflow-hidden hover:z-10 hover:shadow-md transition-shadow text-left cursor-pointer"
                                                 style={{
                                                     top,
                                                     height,
@@ -146,7 +257,7 @@ function WeeklyTimetable({ sessions }) {
                                                 <p className="text-[10px] text-violet-500 truncate leading-tight">
                                                     {formatTime(e.start_time)} – {formatTime(e.end_time)}
                                                 </p>
-                                            </div>
+                                            </button>
                                         )
                                     })}
                                 </div>
@@ -200,10 +311,12 @@ function TeacherHoursTable({ teacherId }) {
     const [slots, setSlots] = useState([])
     const [loading, setLoading] = useState(true)
     const [error, setError] = useState(null)
+    const [expandedDates, setExpandedDates] = useState(new Set())
 
     useEffect(() => {
         setLoading(true)
         setError(null)
+        setExpandedDates(new Set())
         getDashboardTeacherHours(month, year)
             .then((data) => {
                 const row = data.find(r => String(r.teacher_id) === String(teacherId))
@@ -212,6 +325,15 @@ function TeacherHoursTable({ teacherId }) {
             .catch((e) => setError(e.message))
             .finally(() => setLoading(false))
     }, [month, year, teacherId])
+
+    function toggleExpand(dateStr) {
+        setExpandedDates(prev => {
+            const n = new Set(prev)
+            if (n.has(dateStr)) n.delete(dateStr)
+            else n.add(dateStr)
+            return n
+        })
+    }
 
     const daysInMonth = useMemo(() => {
         const days = []
@@ -223,60 +345,59 @@ function TeacherHoursTable({ teacherId }) {
         return days
     }, [year, month])
 
-    const timeSlots = useMemo(() => {
-        const seen = new Set()
-        const list = []
-        for (const sl of slots) {
-            const key = `${sl.start_time}–${sl.end_time}`
-            if (!seen.has(key)) {
-                seen.add(key)
-                list.push({ start_time: sl.start_time, end_time: sl.end_time })
-            }
-        }
-        return list.sort((a, b) => a.start_time.localeCompare(b.start_time))
+    // Distinct subjects — these become the table's columns.
+    const subjectsList = useMemo(() => {
+        const set = new Set()
+        slots.forEach(sl => set.add(sl.subject || "Unspecified"))
+        return [...set].sort()
     }, [slots])
 
-    const slotsByDate = useMemo(() => {
+    // Full slot objects grouped by date, for the expanded session breakdown.
+    const slotsByDateFull = useMemo(() => {
         const map = {}
         for (const sl of slots) {
-            if (!map[sl.date]) map[sl.date] = new Set()
-            map[sl.date].add(`${sl.start_time}–${sl.end_time}`)
+            if (!map[sl.date]) map[sl.date] = []
+            map[sl.date].push(sl)
         }
         return map
     }, [slots])
 
-    function dayHours(daySlots) {
-        let h = 0
-        for (const sl of timeSlots) {
-            const key = `${sl.start_time}–${sl.end_time}`
-            if (daySlots.has(key)) h += slotHours(sl)
-        }
-        return h
+    function daySubjectHours(dateStr, subject) {
+        const list = slotsByDateFull[dateStr] ?? []
+        return list
+            .filter(sl => (sl.subject || "Unspecified") === subject)
+            .reduce((s, sl) => s + slotHours(sl), 0)
     }
 
-    const slotHourTotals = useMemo(() => {
+    function dayTotalHours(dateStr) {
+        const list = slotsByDateFull[dateStr] ?? []
+        return list.reduce((s, sl) => s + slotHours(sl), 0)
+    }
+
+    const subjectTotals = useMemo(() => {
         const totals = {}
-        for (const sl of timeSlots) {
-            const key = `${sl.start_time}–${sl.end_time}`
-            const count = Object.values(slotsByDate).filter(s => s.has(key)).length
-            totals[key] = count * slotHours(sl)
+        for (const subj of subjectsList) totals[subj] = 0
+        for (const sl of slots) {
+            const subj = sl.subject || "Unspecified"
+            totals[subj] = (totals[subj] || 0) + slotHours(sl)
         }
         return totals
-    }, [timeSlots, slotsByDate])
+    }, [slots, subjectsList])
 
     const totalHours = useMemo(
-        () => Object.values(slotHourTotals).reduce((s, h) => s + h, 0),
-        [slotHourTotals],
+        () => Object.values(subjectTotals).reduce((s, h) => s + h, 0),
+        [subjectTotals],
     )
+
+    const hoursBySubject = subjectTotals
 
     // Only keep days where this teacher actually taught at least one slot.
     const workingDays = useMemo(
         () => daysInMonth.filter((dt) => {
             const dateStr = dt.toISOString().slice(0, 10)
-            const daySlots = slotsByDate[dateStr] ?? new Set()
-            return dayHours(daySlots) > 0
+            return dayTotalHours(dateStr) > 0
         }),
-        [daysInMonth, slotsByDate, timeSlots],
+        [daysInMonth, slotsByDateFull],
     )
 
     return (
@@ -285,7 +406,7 @@ function TeacherHoursTable({ teacherId }) {
                 <div>
                     <h2 className="text-lg font-semibold text-slate-900">Teacher Hours</h2>
                     <p className="text-xs text-slate-400 mt-0.5">
-                        Hours taught per day, derived from attendance records.
+                        Hours taught per day, derived from attendance records. Click a row to see the session breakdown.
                     </p>
                     <div className="flex items-center gap-2 mt-2">
                         <button
@@ -297,7 +418,7 @@ function TeacherHoursTable({ teacherId }) {
                                 <path d="M15 18l-6-6 6-6" />
                             </svg>
                         </button>
-                        <p className="text-xs font-medium text-slate-600 min-w-[110px]">{label}</p>
+                        <p className="text-xs font-medium text-slate-600 min-w-[110px] text-center">{label}</p>
                         <button
                             onClick={next}
                             className="p-1 rounded-md border border-slate-200 hover:bg-slate-50 text-slate-500"
@@ -319,16 +440,29 @@ function TeacherHoursTable({ teacherId }) {
                 <p className="text-sm text-slate-400">No teaching activity recorded this month.</p>
             ) : (
                 <>
-                    <div className="flex items-center gap-6 mb-4 p-3 bg-slate-50 rounded-lg border border-slate-100">
-                        <div>
-                            <p className="text-xs text-slate-400">Total Hours This Month</p>
+                    <div className="flex items-center gap-6 mb-4 p-3 bg-slate-50 rounded-lg border border-slate-100 overflow-x-auto">
+                        <div className="flex-shrink-0">
+                            <p className="text-xs text-slate-400 whitespace-nowrap">Total Hours This Month</p>
                             <p className="text-2xl font-bold text-blue-600">
                                 {totalHours % 1 === 0 ? totalHours : totalHours.toFixed(1)}
                             </p>
                         </div>
-                        <div className="border-l border-slate-200 pl-4">
-                            <p className="text-xs text-slate-400">Sessions Taught</p>
+                        <div className="border-l border-slate-200 pl-4 flex-shrink-0">
+                            <p className="text-xs text-slate-400 whitespace-nowrap">Sessions Taught</p>
                             <p className="text-2xl font-bold text-slate-800">{slots.length}</p>
+                        </div>
+                        <div className="border-l border-slate-200 pl-4 flex-shrink-0">
+                            <p className="text-xs text-slate-400 mb-1 whitespace-nowrap">Hours by Subject</p>
+                            <div className="flex items-center gap-2 whitespace-nowrap">
+                                {Object.entries(hoursBySubject).map(([subj, hrs]) => {
+                                    const c = colorFor(subj)
+                                    return (
+                                        <span key={subj} className={`text-sm px-2.5 py-1 rounded-full font-semibold ${c.badge}`}>
+                                            {subj}: {hrs % 1 === 0 ? hrs : hrs.toFixed(1)}h
+                                        </span>
+                                    )
+                                })}
+                            </div>
                         </div>
                     </div>
 
@@ -338,67 +472,115 @@ function TeacherHoursTable({ teacherId }) {
                         <table className="w-full text-sm border border-slate-200 rounded-lg">
                             <thead>
                                 <tr className="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide border-b border-slate-200">
+                                    <th className="w-8"></th>
                                     <th className="px-3 py-2 text-left w-24">Day</th>
                                     <th className="px-3 py-2 text-left w-28">Date</th>
-                                    {timeSlots.map(sl => (
-                                        <th key={`${sl.start_time}–${sl.end_time}`} className="px-2 py-2 text-center">
-                                            {sl.start_time.slice(0, 5)}–{sl.end_time.slice(0, 5)}
-                                        </th>
-                                    ))}
+                                    {subjectsList.map(subj => {
+                                        const c = colorFor(subj)
+                                        return (
+                                            <th key={subj} className="px-2 py-2 text-center">
+                                                <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium normal-case ${c.badge}`}>
+                                                    {subj}
+                                                </span>
+                                            </th>
+                                        )
+                                    })}
                                     <th className="px-3 py-2 text-center font-bold text-slate-700 w-20">Giờ dạy</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 {workingDays.map(dt => {
                                     const dateStr = dt.toISOString().slice(0, 10)
-                                    const daySlots = slotsByDate[dateStr] ?? new Set()
-                                    const hours = dayHours(daySlots)
+                                    const total = dayTotalHours(dateStr)
                                     const isWeekend = dt.getDay() === 0 || dt.getDay() === 6
+                                    const isExpanded = expandedDates.has(dateStr)
+                                    const daySlots = slotsByDateFull[dateStr] ?? []
                                     return (
-                                        <tr key={dateStr} className={`border-t border-slate-100 ${isWeekend ? "bg-slate-50/60" : ""}`}>
-                                            <td className="px-3 py-1.5 text-slate-700">{DAY_NAMES_VN[dt.getDay()]}</td>
-                                            <td className="px-3 py-1.5 text-slate-700">
-                                                {String(dt.getDate()).padStart(2, "0")}/
-                                                {String(dt.getMonth() + 1).padStart(2, "0")}/
-                                                {dt.getFullYear()}
-                                            </td>
-                                            {timeSlots.map(sl => {
-                                                const key = `${sl.start_time}–${sl.end_time}`
-                                                const taught = daySlots.has(key)
-                                                const slot = slots.find(
-                                                    s => s.date === dateStr && `${s.start_time}–${s.end_time}` === key,
-                                                )
-                                                return (
-                                                    <td
-                                                        key={key}
-                                                        className="px-2 py-1.5 text-center"
-                                                        title={slot ? `${slot.class_name}${slot.subject ? ` (${slot.subject})` : ""}` : ""}
+                                        <>
+                                            <tr
+                                                key={dateStr}
+                                                onClick={() => toggleExpand(dateStr)}
+                                                className={`border-t border-slate-100 cursor-pointer hover:bg-blue-50/40 transition-colors ${isWeekend ? "bg-slate-50/60" : ""} ${isExpanded ? "bg-blue-50/40" : ""}`}
+                                            >
+                                                <td className="px-1 py-1.5 text-center text-slate-400">
+                                                    <svg
+                                                        className={`w-3.5 h-3.5 mx-auto transition-transform ${isExpanded ? "rotate-90" : ""}`}
+                                                        fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"
                                                     >
-                                                        {taught ? (
-                                                            <span className="font-bold text-blue-600">
-                                                                {slotHours(sl) % 1 === 0 ? slotHours(sl) : slotHours(sl).toFixed(1)}
-                                                            </span>
-                                                        ) : (
-                                                            <span className="text-slate-200">–</span>
-                                                        )}
+                                                        <path d="M9 18l6-6-6-6" />
+                                                    </svg>
+                                                </td>
+                                                <td className="px-3 py-1.5 text-slate-700">{DAY_NAMES_VN[dt.getDay()]}</td>
+                                                <td className="px-3 py-1.5 text-slate-700">
+                                                    {String(dt.getDate()).padStart(2, "0")}/
+                                                    {String(dt.getMonth() + 1).padStart(2, "0")}/
+                                                    {dt.getFullYear()}
+                                                </td>
+                                                {subjectsList.map(subj => {
+                                                    const hrs = daySubjectHours(dateStr, subj)
+                                                    const c = colorFor(subj)
+                                                    return (
+                                                        <td key={subj} className="px-2 py-1.5 text-center">
+                                                            {hrs > 0 ? (
+                                                                <span className={`font-bold px-1.5 py-0.5 rounded ${c.badge}`}>
+                                                                    {hrs % 1 === 0 ? hrs : hrs.toFixed(1)}
+                                                                </span>
+                                                            ) : (
+                                                                <span className="text-slate-200">–</span>
+                                                            )}
+                                                        </td>
+                                                    )
+                                                })}
+                                                <td className="px-3 py-1.5 text-center font-bold text-slate-800">
+                                                    {total % 1 === 0 ? total : total.toFixed(1)}
+                                                </td>
+                                            </tr>
+                                            {isExpanded && (
+                                                <tr key={`${dateStr}-detail`} className="bg-slate-50/70 border-t border-slate-100">
+                                                    <td colSpan={subjectsList.length + 4} className="px-6 py-3">
+                                                        <div className="flex flex-wrap">
+                                                            {subjectsList
+                                                                .filter(subj => daySubjectHours(dateStr, subj) > 0)
+                                                                .map(subj => {
+                                                                    const c = colorFor(subj)
+                                                                    const sessions = daySlots.filter(
+                                                                        sl => (sl.subject || "Unspecified") === subj,
+                                                                    )
+                                                                    return (
+                                                                        <div key={subj} className="min-w-[180px] px-6 first:pl-0 border-l border-slate-200 first:border-l-0">
+                                                                            <span className={`text-xs font-semibold px-2 py-0.5 rounded-full inline-block mb-2 ${c.badge}`}>
+                                                                                {subj}
+                                                                            </span>
+                                                                            <div className="space-y-1.5">
+                                                                                {sessions.map((sl, i) => (
+                                                                                    <div key={i} className="text-xs text-slate-600 flex items-center justify-between gap-4">
+                                                                                        <span>
+                                                                                            {sl.start_time.slice(0, 5)}–{sl.end_time.slice(0, 5)}
+                                                                                        </span>
+                                                                                        <span className="font-semibold text-slate-700 flex-shrink-0">
+                                                                                            {slotHours(sl) % 1 === 0 ? slotHours(sl) : slotHours(sl).toFixed(1)}h
+                                                                                        </span>
+                                                                                    </div>
+                                                                                ))}
+                                                                            </div>
+                                                                        </div>
+                                                                    )
+                                                                })}
+                                                        </div>
                                                     </td>
-                                                )
-                                            })}
-                                            <td className="px-3 py-1.5 text-center font-bold text-slate-800">
-                                                {hours % 1 === 0 ? hours : hours.toFixed(1)}
-                                            </td>
-                                        </tr>
+                                                </tr>
+                                            )}
+                                        </>
                                     )
                                 })}
                             </tbody>
                             <tfoot>
                                 <tr className="border-t-2 border-slate-300 bg-slate-50 font-bold text-slate-700">
-                                    <td className="px-3 py-2" colSpan={2}>TỔNG CỘNG</td>
-                                    {timeSlots.map(sl => {
-                                        const key = `${sl.start_time}–${sl.end_time}`
-                                        const h = slotHourTotals[key] ?? 0
+                                    <td className="px-3 py-2" colSpan={3}>TỔNG CỘNG</td>
+                                    {subjectsList.map(subj => {
+                                        const h = subjectTotals[subj] ?? 0
                                         return (
-                                            <td key={key} className="px-2 py-2 text-center text-blue-700">
+                                            <td key={subj} className="px-2 py-2 text-center text-blue-700">
                                                 {h % 1 === 0 ? h : h.toFixed(1)}
                                             </td>
                                         )
@@ -421,6 +603,7 @@ export default function TeacherDetail() {
     const [teacher, setTeacher] = useState(null)
     const [loading, setLoading] = useState(true)
     const [error, setError] = useState(null)
+    const [selectedSession, setSelectedSession] = useState(null)
 
     useEffect(() => {
         getTeacherDetail(id)
@@ -478,7 +661,10 @@ export default function TeacherDetail() {
                     {teacher.sessions.length === 0 ? (
                         <p className="text-sm text-slate-400">No scheduled sessions yet.</p>
                     ) : (
-                        <WeeklyTimetable sessions={teacher.sessions} />
+                        <WeeklyTimetable
+                            sessions={teacher.sessions}
+                            onSessionClick={(s) => setSelectedSession(s)}
+                        />
                     )}
                 </div>
 
@@ -510,6 +696,13 @@ export default function TeacherDetail() {
             </div>
 
             <TeacherHoursTable teacherId={teacher.id} />
+
+            {selectedSession && (
+                <SessionModal
+                    session={selectedSession}
+                    onClose={() => setSelectedSession(null)}
+                />
+            )}
         </div>
     )
 }

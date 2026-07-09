@@ -1335,11 +1335,13 @@ function TeacherHoursTable() {
   const [error, setError] = useState(null);
   const [filterSubject, setFilterSubject] = useState("");
   const [selectedTeacher, setSelectedTeacher] = useState(null);
+  const [expandedDates, setExpandedDates] = useState(new Set());
 
   useEffect(() => {
     setLoading(true);
     setError(null);
     setSelectedTeacher(null);
+    setExpandedDates(new Set());
     getDashboardTeacherHours(month, year)
       .then((data) => {
         setRows(data);
@@ -1372,6 +1374,21 @@ function TeacherHoursTable() {
       ? rows.filter((r) => r.slots.some((sl) => sl.subject === v))
       : rows;
     setSelectedTeacher(eligible.length > 0 ? eligible[0].teacher_id : null);
+    setExpandedDates(new Set());
+  }
+
+  function handleTeacherChange(v) {
+    setSelectedTeacher(Number(v));
+    setExpandedDates(new Set());
+  }
+
+  function toggleExpand(dateStr) {
+    setExpandedDates((prev) => {
+      const n = new Set(prev);
+      if (n.has(dateStr)) n.delete(dateStr);
+      else n.add(dateStr);
+      return n;
+    });
   }
 
   const teacherRow = rows.find((r) => r.teacher_id === selectedTeacher) ?? null;
@@ -1383,6 +1400,19 @@ function TeacherHoursTable() {
       : teacherRow.slots;
   }, [teacherRow, filterSubject]);
 
+  // Hours broken down by subject — computed off the teacher's FULL slot
+  // list (ignores the subject filter) so the summary chips always give
+  // the complete picture regardless of which subject view is active.
+  const hoursBySubject = useMemo(() => {
+    if (!teacherRow) return {};
+    const totals = {};
+    for (const sl of teacherRow.slots) {
+      const key = sl.subject || "Unspecified";
+      totals[key] = (totals[key] || 0) + slotHours(sl);
+    }
+    return totals;
+  }, [teacherRow]);
+
   const daysInMonth = useMemo(() => {
     const days = [];
     const d = new Date(year, month - 1, 1);
@@ -1393,51 +1423,51 @@ function TeacherHoursTable() {
     return days;
   }, [year, month]);
 
-  const timeSlots = useMemo(() => {
-    const seen = new Set();
-    const slots = [];
-    for (const sl of visibleSlots) {
-      const key = `${sl.start_time}–${sl.end_time}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        slots.push({ start_time: sl.start_time, end_time: sl.end_time });
-      }
-    }
-    return slots.sort((a, b) => a.start_time.localeCompare(b.start_time));
+  // Distinct subjects that appear in the currently visible slot set —
+  // these become the table's columns (header shows subject only, no times).
+  const subjectsList = useMemo(() => {
+    const set = new Set();
+    visibleSlots.forEach((sl) => set.add(sl.subject || "Unspecified"));
+    return [...set].sort();
   }, [visibleSlots]);
 
-  const slotsByDate = useMemo(() => {
+  // Full slot objects grouped by date, so the expanded row can list each
+  // individual session (time + class) underneath its subject.
+  const slotsByDateFull = useMemo(() => {
     const map = {};
     for (const sl of visibleSlots) {
-      if (!map[sl.date]) map[sl.date] = new Set();
-      map[sl.date].add(`${sl.start_time}–${sl.end_time}`);
+      if (!map[sl.date]) map[sl.date] = [];
+      map[sl.date].push(sl);
     }
     return map;
   }, [visibleSlots]);
 
-  const slotHourTotals = useMemo(() => {
+  function daySubjectHours(dateStr, subject) {
+    const list = slotsByDateFull[dateStr] ?? [];
+    return list
+      .filter((sl) => (sl.subject || "Unspecified") === subject)
+      .reduce((s, sl) => s + slotHours(sl), 0);
+  }
+
+  function dayTotalHours(dateStr) {
+    const list = slotsByDateFull[dateStr] ?? [];
+    return list.reduce((s, sl) => s + slotHours(sl), 0);
+  }
+
+  const subjectTotals = useMemo(() => {
     const totals = {};
-    for (const sl of timeSlots) {
-      const key = `${sl.start_time}–${sl.end_time}`;
-      const count = Object.values(slotsByDate).filter((s) => s.has(key)).length;
-      totals[key] = count * slotHours(sl);
+    for (const subj of subjectsList) totals[subj] = 0;
+    for (const sl of visibleSlots) {
+      const subj = sl.subject || "Unspecified";
+      totals[subj] = (totals[subj] || 0) + slotHours(sl);
     }
     return totals;
-  }, [timeSlots, slotsByDate]);
+  }, [visibleSlots, subjectsList]);
 
   const totalHours = useMemo(
-    () => Object.values(slotHourTotals).reduce((s, h) => s + h, 0),
-    [slotHourTotals],
+    () => Object.values(subjectTotals).reduce((s, h) => s + h, 0),
+    [subjectTotals],
   );
-
-  function dayHours(daySlots) {
-    let h = 0;
-    for (const sl of timeSlots) {
-      const key = `${sl.start_time}–${sl.end_time}`;
-      if (daySlots.has(key)) h += slotHours(sl);
-    }
-    return h;
-  }
 
   // Only keep the days in the month where the selected teacher actually
   // taught at least one slot — empty days are hidden from the table.
@@ -1445,10 +1475,9 @@ function TeacherHoursTable() {
     () =>
       daysInMonth.filter((dt) => {
         const dateStr = dt.toISOString().slice(0, 10);
-        const daySlots = slotsByDate[dateStr] ?? new Set();
-        return dayHours(daySlots) > 0;
+        return dayTotalHours(dateStr) > 0;
       }),
-    [daysInMonth, slotsByDate, timeSlots],
+    [daysInMonth, slotsByDateFull],
   );
 
   const DAY_NAMES_VN = [
@@ -1482,7 +1511,8 @@ function TeacherHoursTable() {
             Teacher Hours
           </h2>
           <p className="text-xs text-slate-400 mt-0.5">
-            Hours taught per day, derived from attendance records.
+            Hours taught per day, derived from attendance records. Click a
+            row to see the session breakdown.
           </p>
           <div className="flex items-center gap-2 mt-2">
             <button
@@ -1500,7 +1530,7 @@ function TeacherHoursTable() {
                 <path d="M15 18l-6-6 6-6" />
               </svg>
             </button>
-            <p className="text-xs font-medium text-slate-600 min-w-[110px]">
+            <p className="text-xs font-medium text-slate-600 min-w-[110px] text-center">
               {label}
             </p>
             <button
@@ -1535,7 +1565,7 @@ function TeacherHoursTable() {
           </select>
           <select
             value={selectedTeacher ?? ""}
-            onChange={(e) => setSelectedTeacher(Number(e.target.value))}
+            onChange={(e) => handleTeacherChange(e.target.value)}
             disabled={teacherOptions.length === 0}
             className={SELECT_CLS}
           >
@@ -1566,32 +1596,54 @@ function TeacherHoursTable() {
         </p>
       ) : (
         <>
-          <div className="flex items-center gap-6 mb-4 p-3 bg-slate-50 rounded-lg border border-slate-100">
-            <div>
-              <p className="text-xs text-slate-400">Teacher</p>
-              <p className="text-sm font-semibold text-slate-800">
+          <div className="flex items-center gap-6 mb-4 p-3 bg-slate-50 rounded-lg border border-slate-100 overflow-x-auto">
+            <div className="flex-shrink-0">
+              <p className="text-xs text-slate-400 whitespace-nowrap">Teacher</p>
+              <p className="text-sm font-semibold text-slate-800 whitespace-nowrap">
                 {teacherRow.teacher_name}
               </p>
             </div>
             {filterSubject && (
-              <div className="border-l border-slate-200 pl-4">
-                <p className="text-xs text-slate-400">Subject</p>
-                <p className="text-sm font-semibold text-slate-800">
+              <div className="border-l border-slate-200 pl-4 flex-shrink-0">
+                <p className="text-xs text-slate-400 whitespace-nowrap">Subject</p>
+                <p className="text-sm font-semibold text-slate-800 whitespace-nowrap">
                   {filterSubject}
                 </p>
               </div>
             )}
-            <div className="border-l border-slate-200 pl-4">
-              <p className="text-xs text-slate-400">Total Hours This Month</p>
+            <div className="border-l border-slate-200 pl-4 flex-shrink-0">
+              <p className="text-xs text-slate-400 whitespace-nowrap">
+                Total Hours This Month
+              </p>
               <p className="text-2xl font-bold text-blue-600">
                 {totalHours % 1 === 0 ? totalHours : totalHours.toFixed(1)}
               </p>
             </div>
-            <div className="border-l border-slate-200 pl-4">
-              <p className="text-xs text-slate-400">Sessions Taught</p>
+            <div className="border-l border-slate-200 pl-4 flex-shrink-0">
+              <p className="text-xs text-slate-400 whitespace-nowrap">
+                Sessions Taught
+              </p>
               <p className="text-2xl font-bold text-slate-800">
                 {visibleSlots.length}
               </p>
+            </div>
+            <div className="border-l border-slate-200 pl-4 flex-shrink-0">
+              <p className="text-xs text-slate-400 mb-1 whitespace-nowrap">
+                Hours by Subject
+              </p>
+              <div className="flex items-center gap-2 whitespace-nowrap">
+                {Object.entries(hoursBySubject).map(([subj, hrs]) => {
+                  const c = colorFor(subj);
+                  return (
+                    <span
+                      key={subj}
+                      className={`text-sm px-2.5 py-1 rounded-full font-semibold ${c.badge}`}
+                    >
+                      {subj}: {hrs % 1 === 0 ? hrs : hrs.toFixed(1)}h
+                    </span>
+                  );
+                })}
+              </div>
             </div>
           </div>
 
@@ -1603,16 +1655,21 @@ function TeacherHoursTable() {
             <table className="w-full text-sm border border-slate-200 rounded-lg">
               <thead>
                 <tr className="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide border-b border-slate-200">
+                  <th className="w-8"></th>
                   <th className="px-3 py-2 text-left w-24">Day</th>
                   <th className="px-3 py-2 text-left w-28">Date</th>
-                  {timeSlots.map((sl) => (
-                    <th
-                      key={`${sl.start_time}–${sl.end_time}`}
-                      className="px-2 py-2 text-center"
-                    >
-                      {sl.start_time.slice(0, 5)}–{sl.end_time.slice(0, 5)}
-                    </th>
-                  ))}
+                  {subjectsList.map((subj) => {
+                    const c = colorFor(subj);
+                    return (
+                      <th key={subj} className="px-2 py-2 text-center">
+                        <span
+                          className={`text-[10px] px-2 py-0.5 rounded-full font-medium normal-case ${c.badge}`}
+                        >
+                          {subj}
+                        </span>
+                      </th>
+                    );
+                  })}
                   <th className="px-3 py-2 text-center font-bold text-slate-700 w-20">
                     Giờ dạy
                   </th>
@@ -1621,72 +1678,120 @@ function TeacherHoursTable() {
               <tbody>
                 {workingDays.map((dt) => {
                   const dateStr = dt.toISOString().slice(0, 10);
-                  const daySlots = slotsByDate[dateStr] ?? new Set();
-                  const hours = dayHours(daySlots);
+                  const total = dayTotalHours(dateStr);
                   const isWeekend = dt.getDay() === 0 || dt.getDay() === 6;
+                  const isExpanded = expandedDates.has(dateStr);
+                  const daySlots = slotsByDateFull[dateStr] ?? [];
                   return (
-                    <tr
-                      key={dateStr}
-                      className={`border-t border-slate-100 ${isWeekend ? "bg-slate-50/60" : ""}`}
-                    >
-                      <td className="px-3 py-1.5 text-slate-700">
-                        {DAY_NAMES_VN[dt.getDay()]}
-                      </td>
-                      <td className="px-3 py-1.5 text-slate-700">
-                        {String(dt.getDate()).padStart(2, "0")}/
-                        {String(dt.getMonth() + 1).padStart(2, "0")}/
-                        {dt.getFullYear()}
-                      </td>
-                      {timeSlots.map((sl) => {
-                        const key = `${sl.start_time}–${sl.end_time}`;
-                        const taught = daySlots.has(key);
-                        const slot = visibleSlots.find(
-                          (s) =>
-                            s.date === dateStr &&
-                            `${s.start_time}–${s.end_time}` === key,
-                        );
-                        return (
-                          <td
-                            key={key}
-                            className="px-2 py-1.5 text-center"
-                            title={
-                              slot
-                                ? `${slot.class_name}${slot.subject ? ` (${slot.subject})` : ""}`
-                                : ""
-                            }
+                    <>
+                      <tr
+                        key={dateStr}
+                        onClick={() => toggleExpand(dateStr)}
+                        className={`border-t border-slate-100 cursor-pointer hover:bg-blue-50/40 transition-colors ${isWeekend ? "bg-slate-50/60" : ""} ${isExpanded ? "bg-blue-50/40" : ""}`}
+                      >
+                        <td className="px-1 py-1.5 text-center text-slate-400">
+                          <svg
+                            className={`w-3.5 h-3.5 mx-auto transition-transform ${isExpanded ? "rotate-90" : ""}`}
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            viewBox="0 0 24 24"
                           >
-                            {taught ? (
-                              <span className="font-bold text-blue-600">
-                                {slotHours(sl) % 1 === 0
-                                  ? slotHours(sl)
-                                  : slotHours(sl).toFixed(1)}
-                              </span>
-                            ) : (
-                              <span className="text-slate-200">–</span>
-                            )}
+                            <path d="M9 18l6-6-6-6" />
+                          </svg>
+                        </td>
+                        <td className="px-3 py-1.5 text-slate-700">
+                          {DAY_NAMES_VN[dt.getDay()]}
+                        </td>
+                        <td className="px-3 py-1.5 text-slate-700">
+                          {String(dt.getDate()).padStart(2, "0")}/
+                          {String(dt.getMonth() + 1).padStart(2, "0")}/
+                          {dt.getFullYear()}
+                        </td>
+                        {subjectsList.map((subj) => {
+                          const hrs = daySubjectHours(dateStr, subj);
+                          const c = colorFor(subj);
+                          return (
+                            <td key={subj} className="px-2 py-1.5 text-center">
+                              {hrs > 0 ? (
+                                <span
+                                  className={`font-bold px-1.5 py-0.5 rounded ${c.badge}`}
+                                >
+                                  {hrs % 1 === 0 ? hrs : hrs.toFixed(1)}
+                                </span>
+                              ) : (
+                                <span className="text-slate-200">–</span>
+                              )}
+                            </td>
+                          );
+                        })}
+                        <td className="px-3 py-1.5 text-center font-bold text-slate-800">
+                          {total % 1 === 0 ? total : total.toFixed(1)}
+                        </td>
+                      </tr>
+                      {isExpanded && (
+                        <tr key={`${dateStr}-detail`} className="bg-slate-50/70 border-t border-slate-100">
+                          <td colSpan={subjectsList.length + 4} className="px-6 py-3">
+                            <div className="flex flex-wrap gap-8">
+                              {subjectsList
+                                .filter((subj) => daySubjectHours(dateStr, subj) > 0)
+                                .map((subj) => {
+                                  const c = colorFor(subj);
+                                  const sessions = daySlots.filter(
+                                    (sl) => (sl.subject || "Unspecified") === subj,
+                                  );
+                                  return (
+                                    <div key={subj} className="min-w-[180px]">
+                                      <span
+                                        className={`text-xs font-semibold px-2 py-0.5 rounded-full inline-block mb-2 ${c.badge}`}
+                                      >
+                                        {subj}
+                                      </span>
+                                      <div className="space-y-1.5">
+                                        {sessions.map((sl, i) => (
+                                          <div
+                                            key={i}
+                                            className="text-xs text-slate-600 flex items-center justify-between gap-4"
+                                          >
+                                            <span>
+                                              {sl.start_time.slice(0, 5)}–
+                                              {sl.end_time.slice(0, 5)}
+                                              {sl.class_name && (
+                                                <span className="text-slate-400">
+                                                  {" "}
+                                                  ({sl.class_name})
+                                                </span>
+                                              )}
+                                            </span>
+                                            <span className="font-semibold text-slate-700 flex-shrink-0">
+                                              {slotHours(sl) % 1 === 0
+                                                ? slotHours(sl)
+                                                : slotHours(sl).toFixed(1)}
+                                              h
+                                            </span>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                            </div>
                           </td>
-                        );
-                      })}
-                      <td className="px-3 py-1.5 text-center font-bold text-slate-800">
-                        {hours % 1 === 0 ? hours : hours.toFixed(1)}
-                      </td>
-                    </tr>
+                        </tr>
+                      )}
+                    </>
                   );
                 })}
               </tbody>
               <tfoot>
                 <tr className="border-t-2 border-slate-300 bg-slate-50 font-bold text-slate-700">
-                  <td className="px-3 py-2" colSpan={2}>
+                  <td className="px-3 py-2" colSpan={3}>
                     CỘNG
                   </td>
-                  {timeSlots.map((sl) => {
-                    const key = `${sl.start_time}–${sl.end_time}`;
-                    const h = slotHourTotals[key] ?? 0;
+                  {subjectsList.map((subj) => {
+                    const h = subjectTotals[subj] ?? 0;
                     return (
-                      <td
-                        key={key}
-                        className="px-2 py-2 text-center text-blue-700"
-                      >
+                      <td key={subj} className="px-2 py-2 text-center text-blue-700">
                         {h % 1 === 0 ? h : h.toFixed(1)}
                       </td>
                     );

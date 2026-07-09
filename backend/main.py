@@ -527,6 +527,10 @@ class TeacherSessionOut(BaseModel):
     day_of_week: DayOfWeekEnum
     start_time: time
     end_time: time
+    # Enrolled roster for this session — mirrors ClassSessionOut.students so
+    # the Teacher Detail page's session popup can show who's in the class,
+    # same as the Dashboard's popup.
+    students: list[SessionRosterStudentOut] = []
 
 class TeacherDetailOut(TeacherOut):
     sessions: list[TeacherSessionOut] = []
@@ -541,9 +545,9 @@ class ScheduleSlotOut(BaseModel):
 
 class AttendanceRowOut(BaseModel):
     """One row per enrollment in the Student Attendance dashboard table.
-    A single enrollment may cover multiple session slots (shared pool).
-    date_session_map maps each occurrence date to its specific session_id
-    so the UI knows which session to write the attendance record against.
+    A single enrollment may cover multiple session slots; occurrence dates
+    are merged across all slots and date_session_map tells the UI which
+    session_id to use per date.
 
     Each occurrence date falls into exactly one of four buckets:
       - present_dates:          status = Present
@@ -675,9 +679,21 @@ def get_teacher_details(id: int, db: Session = Depends(get_db)):
     sessions = []
     for s in teacher.sessions:
         c = s.class_
+        # Roster via enrollment_sessions join table — same logic as
+        # build_class_out, so the Teacher Detail popup shows the same
+        # student list as the Dashboard's popup for this session.
+        seen_students = {}
+        for es in s.enrollment_sessions:
+            enr = es.enrollment
+            exhausted = enr.remaining_sessions is not None and enr.remaining_sessions <= 0
+            if enr.status == EnrollmentStatusEnum.enrolled and not enr.student.is_archived and not exhausted:
+                stu = enr.student
+                seen_students[stu.id] = stu.name
+        roster = [SessionRosterStudentOut(id=sid, name=sname) for sid, sname in seen_students.items()]
         sessions.append(TeacherSessionOut(
             session_id=s.id, class_id=c.id, class_name=c.name, subject=c.subject,
             day_of_week=s.day_of_week, start_time=s.start_time, end_time=s.end_time,
+            students=roster,
         ))
     availability = [TeacherAvailabilityOut.model_validate(a) for a in teacher.availability]
     base = build_teacher_out(teacher)
