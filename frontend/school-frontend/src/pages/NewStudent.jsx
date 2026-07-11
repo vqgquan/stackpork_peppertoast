@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from "react"
-import { createStudent, createEnrollment, getClasses } from "../api"
+import { createStudent, createEnrollment, getClasses, getInventory } from "../api"
 
 const STUDENT_FIELDS = [
   { name: "name",            label: "Full Name",       type: "text",   required: true },
@@ -24,6 +24,18 @@ function formatTime(t) {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`
 }
 
+// Local-date string (YYYY-MM-DD) built from a Date object's LOCAL fields,
+// never via toISOString() — toISOString() converts to UTC first, which can
+// silently roll the date back or forward a day depending on the user's
+// timezone and time of day (the same class of bug as the daysInMonth
+// off-by-one, just in string form instead of a loop).
+function toLocalDateString(d) {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, "0")
+  const day = String(d.getDate()).padStart(2, "0")
+  return `${y}-${m}-${day}`
+}
+
 const EMPTY = {
   name: "", phone: "", gender: "Male", email: "",
   date_of_birth: "", address: "", customer_source: "",
@@ -41,7 +53,17 @@ function makeEmptyEnrollment() {
     start_date: "",
     price: "",
     payment_method: "",
-    discount: "",
+    perks: "",
+    // Registration gifts: inventory items given to the student as part of
+    // this class registration. Confirmed gifts live in `gifts`; the other
+    // fields are just the transient picker state (category filter, chosen
+    // item, chosen amount) for the "add a gift" controls on this card.
+    gifts: [],
+    giftSearch: "",
+    giftCategory: "",
+    giftItemId: "",
+    giftQty: "",
+    giftError: null,
   }
 }
 
@@ -53,6 +75,7 @@ export default function NewStudent() {
   const [form, setForm] = useState(EMPTY)
   const [enrollments, setEnrollments] = useState([])
   const [activeClasses, setActiveClasses] = useState([])
+  const [inventoryItems, setInventoryItems] = useState([])
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState(null)
   const [success, setSuccess] = useState(null)
@@ -61,12 +84,32 @@ export default function NewStudent() {
     getClasses().then(classes => {
       setActiveClasses(classes.filter(c => c.status === "Active"))
     })
+    getInventory().then(setInventoryItems)
   }, [])
 
   const subjects = useMemo(() => {
     const set = new Set(activeClasses.map(c => c.subject || NO_SUBJECT_LABEL))
     return Array.from(set).sort()
   }, [activeClasses])
+
+  const inventoryCategories = useMemo(() => {
+    const set = new Set(inventoryItems.map(i => i.category || "Uncategorized"))
+    return Array.from(set).sort()
+  }, [inventoryItems])
+
+  // How much of each inventory item has already been staged as a gift
+  // somewhere in this form (across all registration cards), so the picker
+  // never lets the user promise away more than what's actually in stock
+  // before the whole form is even submitted.
+  const pendingGiftQuantities = useMemo(() => {
+    const map = {}
+    for (const en of enrollments) {
+      for (const g of en.gifts) {
+        map[g.inventory_item_id] = (map[g.inventory_item_id] || 0) + Number(g.quantity)
+      }
+    }
+    return map
+  }, [enrollments])
 
   function classesForSubject(subject) {
     return activeClasses.filter(c => (c.subject || NO_SUBJECT_LABEL) === subject)
@@ -75,6 +118,20 @@ export default function NewStudent() {
   function sessionsForClass(classId) {
     const cls = activeClasses.find(c => String(c.id) === String(classId))
     return cls ? cls.sessions : []
+  }
+
+  function giftItemOptionsFor(en) {
+    const term = en.giftSearch.trim().toLowerCase()
+    return inventoryItems
+      .filter(i => !en.giftCategory || (i.category || "Uncategorized") === en.giftCategory)
+      .filter(i => !term || i.name.toLowerCase().includes(term))
+      .map(i => ({
+        id: i.id,
+        name: i.name,
+        category: i.category || "Uncategorized",
+        remaining: i.available_quantity - (pendingGiftQuantities[i.id] || 0),
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name))
   }
 
   function handleChange(e) {
@@ -101,6 +158,11 @@ export default function NewStudent() {
         } else if (field === "class_id") {
           updated.session_ids = []
           updated.dayFilter = ""
+        } else if (field === "giftCategory") {
+          updated.giftItemId = ""
+          updated.giftError = null
+        } else if (field === "giftSearch" || field === "giftItemId" || field === "giftQty") {
+          updated.giftError = null
         }
         return updated
       })
@@ -131,6 +193,63 @@ export default function NewStudent() {
     )
   }
 
+  function addGift(key) {
+    setEnrollments(prev => {
+      const en = prev.find(e => e.key === key)
+      if (!en) return prev
+
+      const qty = Number(en.giftQty)
+      if (!en.giftItemId || !qty || qty <= 0) {
+        return prev.map(e =>
+          e.key === key ? { ...e, giftError: "Choose an item and a valid amount." } : e
+        )
+      }
+
+      const item = inventoryItems.find(i => String(i.id) === String(en.giftItemId))
+      if (!item) return prev
+
+      const alreadyPending = prev.reduce((sum, e) => {
+        const forItem = e.gifts.filter(g => String(g.inventory_item_id) === String(item.id))
+        return sum + forItem.reduce((s, g) => s + Number(g.quantity), 0)
+      }, 0)
+      const remaining = item.available_quantity - alreadyPending
+      if (qty > remaining) {
+        return prev.map(e =>
+          e.key === key
+            ? { ...e, giftError: `Only ${remaining} of "${item.name}" available.` }
+            : e
+        )
+      }
+
+      return prev.map(e => {
+        if (e.key !== key) return e
+        return {
+          ...e,
+          gifts: [
+            ...e.gifts,
+            {
+              key: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              inventory_item_id: item.id,
+              name: item.name,
+              quantity: qty,
+            },
+          ],
+          giftItemId: "",
+          giftQty: "",
+          giftError: null,
+        }
+      })
+    })
+  }
+
+  function removeGift(key, giftKey) {
+    setEnrollments(prev =>
+      prev.map(en =>
+        en.key === key ? { ...en, gifts: en.gifts.filter(g => g.key !== giftKey) } : en
+      )
+    )
+  }
+
   async function handleSubmit(e) {
     e.preventDefault()
     setSubmitting(true)
@@ -152,12 +271,16 @@ export default function NewStudent() {
         .map(en => ({
           student_id: newStudent.id,
           session_ids: en.session_ids.map(Number),
-          enrolled_date: en.start_date || new Date().toISOString().slice(0, 10),
+          enrolled_date: en.start_date || toLocalDateString(new Date()),
           status: "Enrolled",
           total_sessions: en.total_sessions !== "" ? Number(en.total_sessions) : null,
           price: en.price !== "" ? Number(en.price) : null,
           payment_method: en.payment_method || null,
-          discount: en.discount || null,
+          perks: en.perks || null,
+          gifts: en.gifts.map(g => ({
+            inventory_item_id: Number(g.inventory_item_id),
+            quantity: Number(g.quantity),
+          })),
         }))
 
       let enrollFailures = 0
@@ -457,11 +580,13 @@ export default function NewStudent() {
                     </select>
                   </div>
                   <div className="col-span-2">
-                    <label className={labelClass}>Discount</label>
-                    <input
-                      type="text" value={en.discount} placeholder="e.g. 10% or 200,000đ"
-                      onChange={e => updateEnrollment(en.key, "discount", e.target.value)}
-                      className={inputClass}
+                    <label className={labelClass}>Perks</label>
+                    <textarea
+                      value={en.perks}
+                      placeholder="e.g. 2 bonus sessions, 10% off tuition, free method book, free guitar strings"
+                      rows={2}
+                      onChange={e => updateEnrollment(en.key, "perks", e.target.value)}
+                      className={`${inputClass} resize-y`}
                     />
                   </div>
                 </div>
@@ -474,6 +599,125 @@ export default function NewStudent() {
                     Price and payment method apply to the whole pack.
                   </p>
                 )}
+
+                {/* Registration Gifts (optional) */}
+                <div className="mt-4 pt-4 border-t border-slate-100">
+                  <label className={labelClass}>
+                    Registration Gifts{" "}
+                    <span className="text-slate-400 font-normal">
+                      (optional — give inventory items to the student)
+                    </span>
+                  </label>
+
+                  <div className="space-y-2 mb-2">
+                    <input
+                      type="text"
+                      value={en.giftSearch}
+                      onChange={e => updateEnrollment(en.key, "giftSearch", e.target.value)}
+                      placeholder="Search items..."
+                      className={`${inputClass} w-full`}
+                    />
+                    <select
+                      value={en.giftCategory}
+                      onChange={e => updateEnrollment(en.key, "giftCategory", e.target.value)}
+                      className={`${inputClass} w-full`}
+                    >
+                      <option value="">All categories</option>
+                      {inventoryCategories.map(c => (
+                        <option key={c} value={c}>{c}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Category acts as a refinement on top of the search bar —
+                      the list below always reflects both together, live. */}
+                  <div className="mb-2 max-h-44 overflow-y-auto border border-slate-200 rounded-lg divide-y divide-slate-100">
+                    {giftItemOptionsFor(en).length === 0 ? (
+                      <p className="text-xs text-slate-400 italic px-3 py-2.5">
+                        No matching items.
+                      </p>
+                    ) : (
+                      giftItemOptionsFor(en).map(i => {
+                        const selected = String(en.giftItemId) === String(i.id)
+                        const outOfStock = i.remaining <= 0
+                        return (
+                          <button
+                            type="button"
+                            key={i.id}
+                            disabled={outOfStock}
+                            onClick={() => updateEnrollment(en.key, "giftItemId", i.id)}
+                            className={`w-full flex items-center justify-between gap-2 px-3 py-2 text-sm text-left transition-colors ${
+                              outOfStock
+                                ? "opacity-40 cursor-not-allowed"
+                                : selected
+                                ? "bg-blue-50"
+                                : "hover:bg-slate-50"
+                            }`}
+                          >
+                            <span className={selected ? "font-medium text-blue-700" : "text-slate-700"}>
+                              {i.name}
+                            </span>
+                            <span className="text-xs text-slate-400 flex-none">
+                              {i.category} · {i.remaining} available
+                            </span>
+                          </button>
+                        )
+                      })
+                    )}
+                  </div>
+
+                  <div className="flex items-center flex-wrap gap-2">
+                    {en.giftItemId && (
+                      <span className="text-xs text-slate-500 flex-1 min-w-0 truncate">
+                        Gifting{" "}
+                        <span className="font-medium text-slate-700">
+                          {inventoryItems.find(i => String(i.id) === String(en.giftItemId))?.name}
+                        </span>
+                      </span>
+                    )}
+                    <input
+                      type="number"
+                      min="1"
+                      placeholder="Qty"
+                      value={en.giftQty}
+                      onChange={e => updateEnrollment(en.key, "giftQty", e.target.value)}
+                      className={`${inputClass} w-20 flex-none`}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => addGift(en.key)}
+                      className="text-xs px-3 py-1.5 border border-slate-200 hover:bg-slate-50 text-slate-600 font-medium rounded-lg flex-none"
+                    >
+                      + Add Gift
+                    </button>
+                  </div>
+
+                  {en.giftError && (
+                    <p className="text-xs text-red-600 mt-1.5">{en.giftError}</p>
+                  )}
+
+                  {en.gifts.length > 0 && (
+                    <div className="mt-2 space-y-1.5">
+                      {en.gifts.map(g => (
+                        <div
+                          key={g.key}
+                          className="flex items-center justify-between text-xs bg-slate-50 border border-slate-100 rounded-lg px-3 py-1.5"
+                        >
+                          <span className="text-slate-600">
+                            {g.name} × {g.quantity}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => removeGift(en.key, g.key)}
+                            className="text-slate-400 hover:text-red-600"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             )
           })}

@@ -103,5 +103,17 @@ export const getInventory = () => request("GET", "/inventory");
 export const createInventoryItem = (data) => request("POST", "/inventory", data);
 export const updateInventoryItem = (id, data) => request("PUT", `/inventory/${id}`, data);
 export const deleteInventoryItem = (id) => request("DELETE", `/inventory/${id}`);
-export const adjustInventoryItem = (id, field, delta) =>
-  request("POST", `/inventory/${id}/adjust`, { field, delta });
+// reason is optional — shown on the /inventory/history ledger for total_quantity changes.
+export const adjustInventoryItem = (id, field, delta, reason) =>
+  request("POST", `/inventory/${id}/adjust`, { field, delta, reason: reason || null });
+
+// Full in/out history ledger (restocks, corrections, and gifts to students).
+// Pass an item id to scope to a single item, or omit for the whole school.
+export const getInventoryHistory = (itemId) =>
+  request("GET", `/inventory/history${itemId != null ? `?item_id=${itemId}` : ""}`);
+
+// --- Gifts ---
+// Full history of inventory items gifted to students (also surfaced,
+// merged with restocks/corrections, via getInventoryHistory above).
+export const getGifts = (studentId) =>
+  request("GET", `/gifts${studentId != null ? `?student_id=${studentId}` : ""}`);

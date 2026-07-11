@@ -1,4 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
+import { Link } from "react-router-dom";
 import {
   getInventory,
   createInventoryItem,
@@ -552,9 +553,19 @@ export default function Inventory() {
 
   return (
     <div className="p-8 w-full">
-      <div className="flex items-end justify-between mb-1">
+      <div className="flex items-center gap-2 mb-1">
         <h1 className="text-xl font-semibold text-slate-900">Inventory</h1>
+
+        <span className="text-sm text-slate-300">/</span>
+
+        <Link
+          to="/inventory/history"
+          className="text-sm text-slate-400 hover:text-slate-600"
+        >
+          History
+        </Link>
       </div>
+
       <p className="text-sm text-slate-400 mb-6">
         Track what's in stock and what's currently in use.
       </p>

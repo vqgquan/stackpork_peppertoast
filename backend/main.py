@@ -162,9 +162,10 @@ class Enrollment(Base):
     remaining_sessions = Column(Integer, nullable=True)
     price = Column(Integer, nullable=True)
     payment_method = Column(String, nullable=True)
-    discount = Column(String, nullable=True)
+    perks = Column(String, nullable=True)  # free-text: bonus sessions, tuition reduction, free items, etc.
     student = relationship("Student", back_populates="enrollments")
     enrollment_sessions = relationship("EnrollmentSession", back_populates="enrollment", cascade="all, delete-orphan")
+    gifts = relationship("InventoryGift", back_populates="enrollment", cascade="all, delete-orphan")
 
 class EnrollmentSession(Base):
     """Join table: one enrollment can cover multiple class session slots,
@@ -232,6 +233,45 @@ class InventoryItem(Base):
     # Base64 data-URI string (e.g. "data:image/png;base64,...") — stores the
     # whole image directly in the row, no separate file storage needed.
     image_data = Column(Text, nullable=True)
+
+class InventoryGift(Base):
+    """Records an inventory item given to a student as a gift attached to a
+    class registration (enrollment). Gifting permanently removes the item(s)
+    from stock, so it decrements the InventoryItem's total_quantity at the
+    time of the gift (see create_enrollment), and this row is the permanent
+    record of that transaction — it is never adjusted after the fact by
+    later inventory changes."""
+    __tablename__ = "inventory_gifts"
+    id = Column(Integer, primary_key=True, index=True)
+    enrollment_id = Column(Integer, ForeignKey("enrollments.id", ondelete="CASCADE"), nullable=False)
+    inventory_item_id = Column(Integer, ForeignKey("inventory_items.id"), nullable=False)
+    student_id = Column(Integer, ForeignKey("students.id"), nullable=False)
+    quantity = Column(Integer, nullable=False)
+    gifted_date = Column(Date, nullable=False)
+    enrollment = relationship("Enrollment", back_populates="gifts")
+    inventory_item = relationship("InventoryItem")
+    student = relationship("Student")
+
+class InventoryTransaction(Base):
+    """Ledger entry for every change to an item's total_quantity — i.e.
+    stock physically entering or leaving the school (restocks, corrections,
+    breakage/loss write-offs, and gifts). quantity_delta is positive for
+    stock coming IN and negative for stock going OUT.
+
+    Gifts create BOTH an InventoryGift row (the gift-specific record, with
+    student/enrollment) AND an InventoryTransaction row (linked via
+    gift_id) so that the item's full in/out history lives in one place —
+    the history endpoint below reads gift details off the linked
+    InventoryGift instead of duplicating student/enrollment info here."""
+    __tablename__ = "inventory_transactions"
+    id = Column(Integer, primary_key=True, index=True)
+    inventory_item_id = Column(Integer, ForeignKey("inventory_items.id", ondelete="CASCADE"), nullable=False)
+    quantity_delta = Column(Integer, nullable=False)
+    reason = Column(String, nullable=True)
+    transaction_date = Column(Date, nullable=False)
+    gift_id = Column(Integer, ForeignKey("inventory_gifts.id", ondelete="CASCADE"), nullable=True)
+    inventory_item = relationship("InventoryItem")
+    gift = relationship("InventoryGift")
 
 Base.metadata.create_all(bind=engine)
 
@@ -400,6 +440,49 @@ def build_inventory_item_out(i: InventoryItem) -> InventoryItemOut:
 class InventoryAdjustRequest(BaseModel):
     field: str = Field(..., pattern="^(total_quantity|in_use_quantity)$")
     delta: int  # positive to increase, negative to decrease
+    reason: Optional[str] = None  # e.g. "Restock", "Damaged/lost" — logged to the history ledger when field is total_quantity
+
+# --- Inventory gift schemas ---
+class GiftCreate(BaseModel):
+    inventory_item_id: int
+    quantity: int = Field(..., gt=0)
+
+class GiftOut(BaseModel):
+    id: int
+    inventory_item_id: int
+    item_name: str
+    quantity: int
+    gifted_date: date
+    class Config: from_attributes = True
+
+class GiftRecordOut(BaseModel):
+    """Flat record used by the standalone /gifts listing endpoint."""
+    id: int
+    enrollment_id: int
+    student_id: int
+    student_name: str
+    inventory_item_id: int
+    item_name: str
+    quantity: int
+    gifted_date: date
+
+class InventoryHistoryEntryOut(BaseModel):
+    """One row in an item's in/out ledger. kind = 'adjustment' for manual
+    restocks/corrections (from InventoryTransaction), or 'gift' for stock
+    given away to a student as part of a class registration (from
+    InventoryGift, joined through to the enrollment's class/session)."""
+    id: str
+    inventory_item_id: int
+    item_name: str
+    category: Optional[str] = None
+    date: date
+    quantity_delta: int  # positive = in, negative = out
+    reason: Optional[str] = None
+    kind: str  # "adjustment" | "gift"
+    student_id: Optional[int] = None
+    student_name: Optional[str] = None
+    class_name: Optional[str] = None
+    schedule_label: Optional[str] = None
 
 # --- Class session schemas ---
 class ClassSessionCreate(BaseModel):
@@ -487,7 +570,8 @@ class EnrollmentCreate(BaseModel):
     total_sessions: Optional[int] = None
     price: Optional[int] = None
     payment_method: Optional[str] = None
-    discount: Optional[str] = None
+    perks: Optional[str] = None
+    gifts: list[GiftCreate] = []  # inventory items gifted to the student as part of this registration
 
 class EnrollmentEndRequest(BaseModel):
     end_date: date
@@ -511,7 +595,8 @@ class EnrollmentOut(BaseModel):
     remaining_sessions: Optional[int] = None
     price: Optional[int] = None
     payment_method: Optional[str] = None
-    discount: Optional[str] = None
+    perks: Optional[str] = None
+    gifts: list[GiftOut] = []
     class Config: from_attributes = True
 
 def build_enrollment_out(e: Enrollment) -> EnrollmentOut:
@@ -526,7 +611,17 @@ def build_enrollment_out(e: Enrollment) -> EnrollmentOut:
         remaining_sessions=e.remaining_sessions,
         price=e.price,
         payment_method=e.payment_method,
-        discount=e.discount,
+        perks=e.perks,
+        gifts=[
+            GiftOut(
+                id=g.id,
+                inventory_item_id=g.inventory_item_id,
+                item_name=g.inventory_item.name,
+                quantity=g.quantity,
+                gifted_date=g.gifted_date,
+            )
+            for g in e.gifts
+        ],
     )
 
 # --- Student detail schema ---
@@ -546,7 +641,7 @@ class StudentSessionOut(BaseModel):
     remaining_sessions: Optional[int] = None
     price: Optional[int] = None
     payment_method: Optional[str] = None
-    discount: Optional[str] = None
+    perks: Optional[str] = None
 
 class PastEnrollmentSlotOut(BaseModel):
     session_id: int
@@ -568,7 +663,7 @@ class PastEnrollmentOut(BaseModel):
     attended_sessions: int
     price: Optional[int] = None
     payment_method: Optional[str] = None
-    discount: Optional[str] = None
+    perks: Optional[str] = None
     slots: list[PastEnrollmentSlotOut] = []
 
 class StudentDetailOut(StudentOut):
@@ -627,7 +722,7 @@ class AttendanceRowOut(BaseModel):
     enrolled_date: date
     price: Optional[int]
     payment_method: Optional[str]
-    discount: Optional[str]
+    perks: Optional[str]
     total_sessions: Optional[int]
     remaining_sessions: Optional[int]
     # All slots in this enrollment (for schedule label)
@@ -705,6 +800,28 @@ def recompute_remaining(db: Session, enrollment: Optional[Enrollment]):
         enrollment.remaining_sessions = enrollment.total_sessions - attended
     else:
         enrollment.remaining_sessions = None
+
+def sorted_enrollment_slots(enrollment: Enrollment):
+    """Enrollment's session slots sorted by day-of-week then start_time —
+    shared helper so the schedule label always orders the same way
+    everywhere it's built (dashboard rows, gift history, etc.)."""
+    return sorted(
+        enrollment.enrollment_sessions,
+        key=lambda es: (
+            _DAY_ORDER.index(es.session.day_of_week.value if hasattr(es.session.day_of_week, "value") else es.session.day_of_week),
+            es.session.start_time,
+        ),
+    )
+
+def schedule_label_for(enrollment: Optional[Enrollment]) -> Optional[str]:
+    if not enrollment or not enrollment.enrollment_sessions:
+        return None
+    slots = sorted_enrollment_slots(enrollment)
+    return " & ".join(
+        f"{(es.session.day_of_week.value if hasattr(es.session.day_of_week, 'value') else es.session.day_of_week)[:3]} "
+        f"{es.session.start_time.strftime('%H:%M')}–{es.session.end_time.strftime('%H:%M')}"
+        for es in slots
+    )
 
 # --- App ---
 app = FastAPI(title="School Management API")
@@ -841,7 +958,7 @@ def get_student_detail(id: int, db: Session = Depends(get_db)):
                 remaining_sessions=enrollment.remaining_sessions,
                 price=enrollment.price,
                 payment_method=enrollment.payment_method,
-                discount=enrollment.discount,
+                perks=enrollment.perks,
             ))
     past_out = []
     for enrollment in student.enrollments:
@@ -882,7 +999,7 @@ def get_student_detail(id: int, db: Session = Depends(get_db)):
             attended_sessions=attended,
             price=enrollment.price,
             payment_method=enrollment.payment_method,
-            discount=enrollment.discount,
+            perks=enrollment.perks,
             slots=slots,
         ))
     past_out.sort(key=lambda p: p.end_date or p.enrolled_date, reverse=True)
@@ -1016,6 +1133,25 @@ def create_enrollment(payload: EnrollmentCreate, db: Session = Depends(get_db)):
         )
         if conflict:
             raise HTTPException(status_code=400, detail=f"Student already enrolled in session {sid}")
+
+    # Validate gifts up front (before creating anything) so a bad gift line
+    # doesn't leave a half-created enrollment behind.
+    pending_deductions: dict[int, int] = {}  # inventory_item_id -> cumulative qty requested in this payload
+    gift_items: dict[int, InventoryItem] = {}
+    for gift in payload.gifts:
+        item = db.query(InventoryItem).filter(InventoryItem.id == gift.inventory_item_id).first()
+        if not item:
+            raise HTTPException(status_code=404, detail=f"Inventory item {gift.inventory_item_id} not found")
+        already_requested = pending_deductions.get(item.id, 0)
+        available = item.total_quantity - item.in_use_quantity - already_requested
+        if gift.quantity > available:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Not enough stock of '{item.name}' to gift {gift.quantity} (only {available} available)",
+            )
+        pending_deductions[item.id] = already_requested + gift.quantity
+        gift_items[item.id] = item
+
     e = Enrollment(
         student_id=payload.student_id,
         enrolled_date=payload.enrolled_date,
@@ -1024,12 +1160,35 @@ def create_enrollment(payload: EnrollmentCreate, db: Session = Depends(get_db)):
         remaining_sessions=payload.total_sessions,  # starts at full pool
         price=payload.price,
         payment_method=payload.payment_method,
-        discount=payload.discount,
+        perks=payload.perks,
     )
     db.add(e)
     db.flush()
     for sid in payload.session_ids:
         db.add(EnrollmentSession(enrollment_id=e.id, session_id=sid))
+
+    # Apply gifts: decrement stock, record each gift against this enrollment,
+    # and log a linked transaction so it shows up in the item's in/out history.
+    for gift in payload.gifts:
+        item = gift_items[gift.inventory_item_id]
+        item.total_quantity -= gift.quantity
+        g = InventoryGift(
+            enrollment_id=e.id,
+            inventory_item_id=item.id,
+            student_id=payload.student_id,
+            quantity=gift.quantity,
+            gifted_date=payload.enrolled_date,
+        )
+        db.add(g)
+        db.flush()
+        db.add(InventoryTransaction(
+            inventory_item_id=item.id,
+            quantity_delta=-gift.quantity,
+            reason="Gift",
+            transaction_date=payload.enrolled_date,
+            gift_id=g.id,
+        ))
+
     db.commit()
     db.refresh(e)
     return build_enrollment_out(e)
@@ -1044,7 +1203,7 @@ def update_enrollment(id: int, payload: EnrollmentCreate, db: Session = Depends(
     e.total_sessions = payload.total_sessions
     e.price = payload.price
     e.payment_method = payload.payment_method
-    e.discount = payload.discount
+    e.perks = payload.perks
     # Replace session links
     db.query(EnrollmentSession).filter(EnrollmentSession.enrollment_id == id).delete()
     for sid in payload.session_ids:
@@ -1115,6 +1274,29 @@ def add_sessions_to_enrollment(id: int, payload: EnrollmentAddSessionsRequest, d
     db.commit()
     db.refresh(e)
     return build_enrollment_out(e)
+
+# --- Inventory Gifts ---
+@app.get("/gifts", response_model=list[GiftRecordOut])
+def get_gifts(student_id: Optional[int] = Query(None), db: Session = Depends(get_db)):
+    """Full history of inventory items gifted to students. Optionally
+    filtered by student for display on a student's detail page."""
+    q = db.query(InventoryGift)
+    if student_id is not None:
+        q = q.filter(InventoryGift.student_id == student_id)
+    gifts = q.order_by(InventoryGift.gifted_date.desc()).all()
+    return [
+        GiftRecordOut(
+            id=g.id,
+            enrollment_id=g.enrollment_id,
+            student_id=g.student_id,
+            student_name=g.student.name,
+            inventory_item_id=g.inventory_item_id,
+            item_name=g.inventory_item.name,
+            quantity=g.quantity,
+            gifted_date=g.gifted_date,
+        )
+        for g in gifts
+    ]
 
 # --- Session Reviews ---
 @app.get("/students/{student_id}/reviews", response_model=list[SessionReviewOut])
@@ -1514,7 +1696,7 @@ def dashboard_attendance(
             enrolled_date=e.enrolled_date,
             price=e.price,
             payment_method=e.payment_method,
-            discount=e.discount,
+            perks=e.perks,
             total_sessions=e.total_sessions,
             remaining_sessions=e.remaining_sessions,
             schedules=schedules,
@@ -1605,6 +1787,14 @@ def get_inventory(db: Session = Depends(get_db)):
 def create_inventory_item(payload: InventoryItemCreate, db: Session = Depends(get_db)):
     item = InventoryItem(**payload.model_dump())
     db.add(item)
+    db.flush()
+    if item.total_quantity > 0:
+        db.add(InventoryTransaction(
+            inventory_item_id=item.id,
+            quantity_delta=item.total_quantity,
+            reason="Initial stock",
+            transaction_date=date.today(),
+        ))
     db.commit()
     db.refresh(item)
     return build_inventory_item_out(item)
@@ -1614,8 +1804,19 @@ def update_inventory_item(id: int, payload: InventoryItemCreate, db: Session = D
     item = db.query(InventoryItem).filter(InventoryItem.id == id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Inventory item not found")
+    old_total = item.total_quantity
     for key, value in payload.model_dump().items():
         setattr(item, key, value)
+    # If editing the item changed its stock count directly (rather than via
+    # /adjust), log the difference so it still shows up in the history.
+    delta = item.total_quantity - old_total
+    if delta != 0:
+        db.add(InventoryTransaction(
+            inventory_item_id=item.id,
+            quantity_delta=delta,
+            reason="Manual edit",
+            transaction_date=date.today(),
+        ))
     db.commit()
     db.refresh(item)
     return build_inventory_item_out(item)
@@ -1641,6 +1842,63 @@ def adjust_inventory_item(id: int, payload: InventoryAdjustRequest, db: Session 
     if payload.field == "in_use_quantity" and new_value > item.total_quantity:
         raise HTTPException(status_code=400, detail="In-use can't exceed total quantity")
     setattr(item, payload.field, new_value)
+    # Only total_quantity changes represent stock physically entering/leaving
+    # the school, so only those get logged to the in/out history ledger.
+    if payload.field == "total_quantity" and payload.delta != 0:
+        db.add(InventoryTransaction(
+            inventory_item_id=item.id,
+            quantity_delta=payload.delta,
+            reason=payload.reason,
+            transaction_date=date.today(),
+        ))
     db.commit()
     db.refresh(item)
     return build_inventory_item_out(item)
+
+@app.get("/inventory/history", response_model=list[InventoryHistoryEntryOut])
+def get_inventory_history(item_id: Optional[int] = Query(None), db: Session = Depends(get_db)):
+    """Combined in/out ledger for inventory items: manual restocks/
+    corrections (InventoryTransaction rows not tied to a gift) plus items
+    gifted to students (InventoryGift rows, enriched with student name and
+    the class/session from the linked enrollment)."""
+    entries: list[InventoryHistoryEntryOut] = []
+
+    txn_q = db.query(InventoryTransaction).filter(InventoryTransaction.gift_id.is_(None))
+    if item_id is not None:
+        txn_q = txn_q.filter(InventoryTransaction.inventory_item_id == item_id)
+    for t in txn_q.all():
+        entries.append(InventoryHistoryEntryOut(
+            id=f"txn-{t.id}",
+            inventory_item_id=t.inventory_item_id,
+            item_name=t.inventory_item.name,
+            category=t.inventory_item.category,
+            date=t.transaction_date,
+            quantity_delta=t.quantity_delta,
+            reason=t.reason,
+            kind="adjustment",
+        ))
+
+    gift_q = db.query(InventoryGift)
+    if item_id is not None:
+        gift_q = gift_q.filter(InventoryGift.inventory_item_id == item_id)
+    for g in gift_q.all():
+        enrollment = g.enrollment
+        slots = sorted_enrollment_slots(enrollment) if enrollment else []
+        class_name = slots[0].session.class_.name if slots else None
+        entries.append(InventoryHistoryEntryOut(
+            id=f"gift-{g.id}",
+            inventory_item_id=g.inventory_item_id,
+            item_name=g.inventory_item.name,
+            category=g.inventory_item.category,
+            date=g.gifted_date,
+            quantity_delta=-g.quantity,
+            reason="Gift",
+            kind="gift",
+            student_id=g.student_id,
+            student_name=g.student.name,
+            class_name=class_name,
+            schedule_label=schedule_label_for(enrollment),
+        ))
+
+    entries.sort(key=lambda e: (e.date, e.id), reverse=True)
+    return entries

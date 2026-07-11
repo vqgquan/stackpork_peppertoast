@@ -10,6 +10,7 @@ import Students from "./pages/Students";
 import NewStudent from "./pages/NewStudent";
 import StudentDetail from "./pages/StudentDetail";
 import Inventory from "./pages/Inventory";
+import InventoryHistory from "./pages/InventoryHistory";
 
 export default function App() {
   const location = useLocation();
@@ -56,6 +57,7 @@ export default function App() {
           <Route path="/students/new" element={<NewStudent />} />
           <Route path="/students/:id" element={<StudentDetail />} />
           <Route path="/inventory" element={<Inventory />} />
+          <Route path="/inventory/history" element={<InventoryHistory />} />
         </Routes>
       </main>
     </div>
