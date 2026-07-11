@@ -97,3 +97,11 @@ export const deleteAttendanceRecord = (id) => request("DELETE", `/attendance/${i
 
 export const getDashboardAttendance   = (month, year) => request("GET", `/dashboard/attendance?month=${month}&year=${year}`);
 export const getDashboardTeacherHours = (month, year) => request("GET", `/dashboard/teacher-hours?month=${month}&year=${year}`);
+
+// --- Inventory ---
+export const getInventory = () => request("GET", "/inventory");
+export const createInventoryItem = (data) => request("POST", "/inventory", data);
+export const updateInventoryItem = (id, data) => request("PUT", `/inventory/${id}`, data);
+export const deleteInventoryItem = (id) => request("DELETE", `/inventory/${id}`);
+export const adjustInventoryItem = (id, field, delta) =>
+  request("POST", `/inventory/${id}/adjust`, { field, delta });

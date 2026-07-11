@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Depends, HTTPException, Query
-from sqlalchemy import create_engine, Column, Integer, String, Date, Time, ForeignKey, Enum, Boolean, UniqueConstraint
+from sqlalchemy import create_engine, Column, Integer, String, Text, Date, Time, ForeignKey, Enum, Boolean, UniqueConstraint
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 from sqlalchemy.exc import IntegrityError
@@ -216,6 +216,23 @@ class AttendanceRecord(Base):
         UniqueConstraint("student_id", "session_id", "attendance_date", name="uq_attendance_per_occurrence"),
     )
 
+class InventoryItem(Base):
+    """A single tracked inventory item (instruments, accessories, supplies).
+    total_quantity is everything the school owns; in_use_quantity is how
+    much of that is currently checked out / being used, so that
+    available_quantity (computed, not stored) = total - in_use."""
+    __tablename__ = "inventory_items"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    category = Column(String, nullable=True)
+    unit = Column(String, nullable=True)          # e.g. "pcs", "boxes", "strings"
+    total_quantity = Column(Integer, nullable=False, default=0)
+    in_use_quantity = Column(Integer, nullable=False, default=0)
+    notes = Column(String, nullable=True)
+    # Base64 data-URI string (e.g. "data:image/png;base64,...") — stores the
+    # whole image directly in the row, no separate file storage needed.
+    image_data = Column(Text, nullable=True)
+
 Base.metadata.create_all(bind=engine)
 
 # --- Teacher schemas ---
@@ -343,6 +360,46 @@ class AttendanceOut(BaseModel):
     status: AttendanceStatusEnum
     note: Optional[str] = None
     class Config: from_attributes = True
+
+# --- Inventory schemas ---
+class InventoryItemCreate(BaseModel):
+    name: str
+    category: Optional[str] = None
+    unit: Optional[str] = None
+    total_quantity: int = Field(default=0, ge=0)
+    in_use_quantity: int = Field(default=0, ge=0)
+    notes: Optional[str] = None
+    image_data: Optional[str] = None  # base64 data-URI string, or None to clear
+
+    @model_validator(mode="after")
+    def validate_in_use_le_total(self):
+        if self.in_use_quantity > self.total_quantity:
+            raise ValueError("in_use_quantity can't exceed total_quantity")
+        return self
+
+class InventoryItemOut(BaseModel):
+    id: int
+    name: str
+    category: Optional[str] = None
+    unit: Optional[str] = None
+    total_quantity: int
+    in_use_quantity: int
+    available_quantity: int
+    notes: Optional[str] = None
+    image_data: Optional[str] = None
+    class Config: from_attributes = True
+
+def build_inventory_item_out(i: InventoryItem) -> InventoryItemOut:
+    return InventoryItemOut(
+        id=i.id, name=i.name, category=i.category, unit=i.unit,
+        total_quantity=i.total_quantity, in_use_quantity=i.in_use_quantity,
+        available_quantity=i.total_quantity - i.in_use_quantity,
+        notes=i.notes, image_data=i.image_data,
+    )
+
+class InventoryAdjustRequest(BaseModel):
+    field: str = Field(..., pattern="^(total_quantity|in_use_quantity)$")
+    delta: int  # positive to increase, negative to decrease
 
 # --- Class session schemas ---
 class ClassSessionCreate(BaseModel):
@@ -1537,3 +1594,53 @@ def dashboard_teacher_hours(
 
     rows.sort(key=lambda r: r.teacher_name)
     return rows
+
+# --- Inventory ---
+@app.get("/inventory", response_model=list[InventoryItemOut])
+def get_inventory(db: Session = Depends(get_db)):
+    items = db.query(InventoryItem).order_by(InventoryItem.name).all()
+    return [build_inventory_item_out(i) for i in items]
+
+@app.post("/inventory", response_model=InventoryItemOut, status_code=201)
+def create_inventory_item(payload: InventoryItemCreate, db: Session = Depends(get_db)):
+    item = InventoryItem(**payload.model_dump())
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return build_inventory_item_out(item)
+
+@app.put("/inventory/{id}", response_model=InventoryItemOut)
+def update_inventory_item(id: int, payload: InventoryItemCreate, db: Session = Depends(get_db)):
+    item = db.query(InventoryItem).filter(InventoryItem.id == id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Inventory item not found")
+    for key, value in payload.model_dump().items():
+        setattr(item, key, value)
+    db.commit()
+    db.refresh(item)
+    return build_inventory_item_out(item)
+
+@app.delete("/inventory/{id}", status_code=204)
+def delete_inventory_item(id: int, db: Session = Depends(get_db)):
+    item = db.query(InventoryItem).filter(InventoryItem.id == id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Inventory item not found")
+    db.delete(item)
+    db.commit()
+
+@app.post("/inventory/{id}/adjust", response_model=InventoryItemOut)
+def adjust_inventory_item(id: int, payload: InventoryAdjustRequest, db: Session = Depends(get_db)):
+    item = db.query(InventoryItem).filter(InventoryItem.id == id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Inventory item not found")
+    new_value = getattr(item, payload.field) + payload.delta
+    if new_value < 0:
+        raise HTTPException(status_code=400, detail="Quantity can't go below zero")
+    if payload.field == "total_quantity" and new_value < item.in_use_quantity:
+        raise HTTPException(status_code=400, detail="Total can't drop below the quantity currently in use")
+    if payload.field == "in_use_quantity" and new_value > item.total_quantity:
+        raise HTTPException(status_code=400, detail="In-use can't exceed total quantity")
+    setattr(item, payload.field, new_value)
+    db.commit()
+    db.refresh(item)
+    return build_inventory_item_out(item)

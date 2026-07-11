@@ -9,6 +9,7 @@ import ClassDetail from "./pages/ClassDetail";
 import Students from "./pages/Students";
 import NewStudent from "./pages/NewStudent";
 import StudentDetail from "./pages/StudentDetail";
+import Inventory from "./pages/Inventory";
 
 export default function App() {
   const location = useLocation();
@@ -27,6 +28,7 @@ export default function App() {
           ["/students/new", "Add Student"],
           ["/classes", "Classes"],
           ["/classes/new", "Add Class"],
+          ["/inventory", "Inventory"],
         ].map(([path, label]) => (
           <Link
             key={path}
@@ -53,6 +55,7 @@ export default function App() {
           <Route path="/students" element={<Students />} />
           <Route path="/students/new" element={<NewStudent />} />
           <Route path="/students/:id" element={<StudentDetail />} />
+          <Route path="/inventory" element={<Inventory />} />
         </Routes>
       </main>
     </div>
