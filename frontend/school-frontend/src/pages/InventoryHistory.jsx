@@ -79,12 +79,24 @@ export default function InventoryHistory() {
 
   return (
     <div className="p-8 w-full">
-      <div className="flex items-center gap-2 mb-1">
-        <Link to="/inventory" className="text-sm text-slate-400 hover:text-slate-600">
-          Inventory
+      <div className="flex items-center justify-between mb-1">
+        <h1 className="text-xl font-semibold text-slate-900">Inventory History</h1>
+
+        <Link
+          to="/inventory"
+          className="text-sm px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-medium rounded-lg inline-flex items-center gap-1.5"
+        >
+          <svg
+            className="w-4 h-4"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            viewBox="0 0 24 24"
+          >
+            <path d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+          </svg>
+          Back to Inventory
         </Link>
-        <span className="text-sm text-slate-300">/</span>
-        <h1 className="text-xl font-semibold text-slate-900">History</h1>
       </div>
       <p className="text-sm text-slate-400 mb-6">
         Every item entering or leaving stock — restocks, corrections, and gifts given to students.
