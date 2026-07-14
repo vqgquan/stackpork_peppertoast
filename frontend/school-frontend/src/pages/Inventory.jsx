@@ -17,7 +17,6 @@ function ItemModal({ item, onClose, onSaved }) {
   const isEdit = !!item;
   const [name, setName] = useState(item?.name ?? "");
   const [category, setCategory] = useState(item?.category ?? "");
-  const [unit, setUnit] = useState(item?.unit ?? "");
   const [totalQuantity, setTotalQuantity] = useState(
     item?.total_quantity ?? 0,
   );
@@ -52,7 +51,6 @@ function ItemModal({ item, onClose, onSaved }) {
     const payload = {
       name: name.trim(),
       category: category.trim() || null,
-      unit: unit.trim() || null,
       total_quantity: Number(totalQuantity) || 0,
       in_use_quantity: Number(inUseQuantity) || 0,
       notes: notes.trim() || null,
@@ -112,29 +110,16 @@ function ItemModal({ item, onClose, onSaved }) {
             />
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
-                Category
-              </label>
-              <input
-                value={category}
-                onChange={(e) => setCategory(e.target.value)}
-                className="w-full mt-1 px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                placeholder="e.g. Accessories"
-              />
-            </div>
-            <div>
-              <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
-                Unit
-              </label>
-              <input
-                value={unit}
-                onChange={(e) => setUnit(e.target.value)}
-                className="w-full mt-1 px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                placeholder="e.g. pcs"
-              />
-            </div>
+          <div>
+            <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
+              Category
+            </label>
+            <input
+              value={category}
+              onChange={(e) => setCategory(e.target.value)}
+              className="w-full mt-1 px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              placeholder="e.g. Accessories"
+            />
           </div>
 
           <div className="grid grid-cols-2 gap-3">
@@ -676,7 +661,6 @@ export default function Inventory() {
               <tr className="bg-slate-50 text-left text-xs text-slate-500 uppercase tracking-wide border-b border-slate-200">
                 <th className="px-3 py-2">Name</th>
                 <th className="px-3 py-2">Category</th>
-                <th className="px-3 py-2">Unit</th>
                 <th className="px-3 py-2 text-center">Total</th>
                 <th className="px-3 py-2 text-center">In Use</th>
                 <th className="px-3 py-2 text-center">Available</th>
@@ -687,7 +671,7 @@ export default function Inventory() {
               {filteredItems.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={7}
+                    colSpan={6}
                     className="px-3 py-8 text-center text-slate-400 text-sm"
                   >
                     {items.length === 0
@@ -727,9 +711,6 @@ export default function Inventory() {
                       </td>
                       <td className="px-3 py-2 text-xs text-slate-500">
                         {item.category || "—"}
-                      </td>
-                      <td className="px-3 py-2 text-xs text-slate-500">
-                        {item.unit || "—"}
                       </td>
                       <td className="px-3 py-2 text-center text-sm font-semibold text-slate-700">
                         {item.total_quantity}

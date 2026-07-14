@@ -226,7 +226,6 @@ class InventoryItem(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
     category = Column(String, nullable=True)
-    unit = Column(String, nullable=True)          # e.g. "pcs", "boxes", "strings"
     total_quantity = Column(Integer, nullable=False, default=0)
     in_use_quantity = Column(Integer, nullable=False, default=0)
     notes = Column(String, nullable=True)
@@ -405,7 +404,6 @@ class AttendanceOut(BaseModel):
 class InventoryItemCreate(BaseModel):
     name: str
     category: Optional[str] = None
-    unit: Optional[str] = None
     total_quantity: int = Field(default=0, ge=0)
     in_use_quantity: int = Field(default=0, ge=0)
     notes: Optional[str] = None
@@ -421,7 +419,6 @@ class InventoryItemOut(BaseModel):
     id: int
     name: str
     category: Optional[str] = None
-    unit: Optional[str] = None
     total_quantity: int
     in_use_quantity: int
     available_quantity: int
@@ -431,7 +428,7 @@ class InventoryItemOut(BaseModel):
 
 def build_inventory_item_out(i: InventoryItem) -> InventoryItemOut:
     return InventoryItemOut(
-        id=i.id, name=i.name, category=i.category, unit=i.unit,
+        id=i.id, name=i.name, category=i.category,
         total_quantity=i.total_quantity, in_use_quantity=i.in_use_quantity,
         available_quantity=i.total_quantity - i.in_use_quantity,
         notes=i.notes, image_data=i.image_data,
