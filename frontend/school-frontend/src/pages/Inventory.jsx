@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react";
+import React, { useEffect, useState, useMemo } from "react";
 import { Link } from "react-router-dom";
 import {
   getInventory,
@@ -6,7 +6,14 @@ import {
   updateInventoryItem,
   deleteInventoryItem,
   adjustInventoryItem,
+  purchaseInventoryItem,
+  sellInventoryItem,
 } from "../api";
+
+// Vietnamese-dong formatter shared by every price display in this file, so
+// "latest price" always reads the same way wherever it's shown.
+const formatPrice = (value) =>
+  value == null ? "—" : `${value.toLocaleString("vi-VN")}đ`;
 
 const SELECT_CLS =
   "text-sm border border-slate-200 rounded-lg px-3 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-700";
@@ -23,6 +30,8 @@ function ItemModal({ item, onClose, onSaved }) {
   const [inUseQuantity, setInUseQuantity] = useState(
     item?.in_use_quantity ?? 0,
   );
+  const [costPrice, setCostPrice] = useState(item?.cost_price ?? "");
+  const [salePrice, setSalePrice] = useState(item?.sale_price ?? "");
   const [notes, setNotes] = useState(item?.notes ?? "");
   const [imageData, setImageData] = useState(item?.image_data ?? null);
   const [saving, setSaving] = useState(false);
@@ -53,6 +62,8 @@ function ItemModal({ item, onClose, onSaved }) {
       category: category.trim() || null,
       total_quantity: Number(totalQuantity) || 0,
       in_use_quantity: Number(inUseQuantity) || 0,
+      cost_price: costPrice === "" ? null : Number(costPrice),
+      sale_price: salePrice === "" ? null : Number(salePrice),
       notes: notes.trim() || null,
       image_data: imageData,
     };
@@ -148,6 +159,40 @@ function ItemModal({ item, onClose, onSaved }) {
               />
             </div>
           </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                Cost Price
+              </label>
+              <input
+                type="number"
+                min="0"
+                value={costPrice}
+                onChange={(e) => setCostPrice(e.target.value)}
+                className="w-full mt-1 px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="Optional"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                Sale Price
+              </label>
+              <input
+                type="number"
+                min="0"
+                value={salePrice}
+                onChange={(e) => setSalePrice(e.target.value)}
+                className="w-full mt-1 px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="Optional"
+              />
+            </div>
+          </div>
+          <p className="text-xs text-slate-400 -mt-2">
+            These are the item's latest prices. Use "Purchase" / "Sell" in
+            the Manage window to record a batch at a different price — past
+            prices stay visible in the item's history.
+          </p>
 
           <div>
             <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
@@ -307,6 +352,160 @@ function AdjustRow({ label, value, otherValue, isTotalField, busy, onApply }) {
   );
 }
 
+// ─── Restock at a known price ───────────────────────────────────────────────
+// Same module-scope reasoning as AdjustRow above — kept out of ManageModal's
+// body so its typed-in-progress amount/cost survive re-renders.
+function PurchaseRow({ currentCostPrice, busy, onApply }) {
+  const [quantity, setQuantity] = useState("");
+  const [unitCost, setUnitCost] = useState(currentCostPrice ?? "");
+  const [localError, setLocalError] = useState(null);
+
+  async function handleApply() {
+    const qty = Number(quantity);
+    const cost = Number(unitCost);
+    if (!quantity || !Number.isInteger(qty) || qty <= 0) {
+      setLocalError("Enter a whole number greater than 0.");
+      return;
+    }
+    if (unitCost === "" || Number.isNaN(cost) || cost < 0) {
+      setLocalError("Enter a valid unit cost.");
+      return;
+    }
+    try {
+      await onApply(qty, cost);
+      setLocalError(null);
+      setQuantity("");
+    } catch (e) {
+      setLocalError(e.message);
+    }
+  }
+
+  return (
+    <div className="border border-slate-100 rounded-lg px-4 py-3">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-sm text-slate-600">Purchase (restock)</span>
+        <span className="text-xs text-slate-400">
+          Latest cost: {formatPrice(currentCostPrice)}
+        </span>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          type="number"
+          min="1"
+          value={quantity}
+          onChange={(e) => {
+            setQuantity(e.target.value);
+            setLocalError(null);
+          }}
+          placeholder="Qty"
+          className="w-20 text-sm border border-slate-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500"
+        />
+        <input
+          type="number"
+          min="0"
+          value={unitCost}
+          onChange={(e) => {
+            setUnitCost(e.target.value);
+            setLocalError(null);
+          }}
+          placeholder="Unit cost"
+          className="w-28 text-sm border border-slate-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500"
+        />
+        <button
+          onClick={handleApply}
+          disabled={busy}
+          className="text-xs px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-medium rounded-lg"
+        >
+          {busy ? "Recording..." : "Record Purchase"}
+        </button>
+      </div>
+      {localError && <p className="text-xs text-red-600 mt-1.5">{localError}</p>}
+    </div>
+  );
+}
+
+// ─── Sell to a customer at a known price ────────────────────────────────────
+function SellRow({ currentSalePrice, available, busy, onApply }) {
+  const [quantity, setQuantity] = useState("");
+  const [unitPrice, setUnitPrice] = useState(currentSalePrice ?? "");
+  const [buyerName, setBuyerName] = useState("");
+  const [localError, setLocalError] = useState(null);
+
+  async function handleApply() {
+    const qty = Number(quantity);
+    const price = Number(unitPrice);
+    if (!quantity || !Number.isInteger(qty) || qty <= 0) {
+      setLocalError("Enter a whole number greater than 0.");
+      return;
+    }
+    if (qty > available) {
+      setLocalError(`Only ${available} available to sell.`);
+      return;
+    }
+    if (unitPrice === "" || Number.isNaN(price) || price < 0) {
+      setLocalError("Enter a valid sale price.");
+      return;
+    }
+    try {
+      await onApply(qty, price, buyerName.trim() || null);
+      setLocalError(null);
+      setQuantity("");
+      setBuyerName("");
+    } catch (e) {
+      setLocalError(e.message);
+    }
+  }
+
+  return (
+    <div className="border border-slate-100 rounded-lg px-4 py-3">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-sm text-slate-600">Sell</span>
+        <span className="text-xs text-slate-400">
+          Latest price: {formatPrice(currentSalePrice)}
+        </span>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          type="number"
+          min="1"
+          value={quantity}
+          onChange={(e) => {
+            setQuantity(e.target.value);
+            setLocalError(null);
+          }}
+          placeholder="Qty"
+          className="w-20 text-sm border border-slate-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500"
+        />
+        <input
+          type="number"
+          min="0"
+          value={unitPrice}
+          onChange={(e) => {
+            setUnitPrice(e.target.value);
+            setLocalError(null);
+          }}
+          placeholder="Sale price"
+          className="w-28 text-sm border border-slate-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500"
+        />
+        <input
+          value={buyerName}
+          onChange={(e) => setBuyerName(e.target.value)}
+          placeholder="Buyer (optional)"
+          className="w-36 text-sm border border-slate-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500"
+        />
+        <button
+          onClick={handleApply}
+          disabled={busy}
+          className="text-xs px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-medium rounded-lg"
+        >
+          {busy ? "Recording..." : "Record Sale"}
+        </button>
+      </div>
+      {localError && <p className="text-xs text-red-600 mt-1.5">{localError}</p>}
+    </div>
+  );
+}
+
 // ─── Manage item modal (increase / decrease / delete) ──────────────────────
 function ManageModal({ item, onClose, onChanged }) {
   const [totalQuantity, setTotalQuantity] = useState(item.total_quantity);
@@ -315,6 +514,14 @@ function ManageModal({ item, onClose, onChanged }) {
   const [error, setError] = useState(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
+
+  // Image editing — kept separate from the quantity fields above since it
+  // saves via updateInventoryItem (full item payload) rather than the
+  // /adjust endpoint used for quantities.
+  const [imageData, setImageData] = useState(item.image_data ?? null);
+  const [savingImage, setSavingImage] = useState(false);
+  const [imageError, setImageError] = useState(null);
+  const imageDirty = imageData !== (item.image_data ?? null);
 
   const available = totalQuantity - inUseQuantity;
 
@@ -330,6 +537,40 @@ function ManageModal({ item, onClose, onChanged }) {
       setError(e.message);
     } finally {
       setBusyField(null);
+    }
+  }
+
+  function handleImageChange(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      setImageError("Please choose an image file.");
+      return;
+    }
+    setImageError(null);
+    const reader = new FileReader();
+    reader.onload = () => setImageData(reader.result); // base64 data URI
+    reader.readAsDataURL(file);
+  }
+
+  async function handleSaveImage() {
+    setSavingImage(true);
+    setImageError(null);
+    try {
+      await updateInventoryItem(item.id, {
+        name: item.name,
+        category: item.category,
+        total_quantity: totalQuantity,
+        in_use_quantity: inUseQuantity,
+        notes: item.notes,
+        image_data: imageData,
+      });
+      item.image_data = imageData; // keep local copy of the prop in sync
+      onChanged();
+    } catch (e) {
+      setImageError(e.message);
+    } finally {
+      setSavingImage(false);
     }
   }
 
@@ -392,6 +633,71 @@ function ManageModal({ item, onClose, onChanged }) {
         </div>
 
         <div className="p-5 space-y-3">
+          <div className="border border-slate-100 rounded-lg px-4 py-3">
+            <span className="text-sm text-slate-600 block mb-2">Image</span>
+            <div className="flex items-center gap-3">
+              {imageData ? (
+                <img
+                  src={imageData}
+                  alt={item.name}
+                  className="w-16 h-16 object-contain rounded-lg border border-slate-200 bg-slate-50"
+                />
+              ) : (
+                <div className="w-16 h-16 rounded-lg border border-dashed border-slate-200 flex items-center justify-center text-slate-300">
+                  <svg
+                    className="w-6 h-6"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                    viewBox="0 0 24 24"
+                  >
+                    <path d="M4 16l4.5-4.5a2 2 0 012.8 0L16 16m-2-2 1.5-1.5a2 2 0 012.8 0L20 14M4 6h16v12H4V6z" />
+                  </svg>
+                </div>
+              )}
+              <div className="flex flex-col gap-1">
+                <label className="text-xs px-3 py-1.5 border border-slate-200 hover:bg-slate-50 text-slate-600 font-medium rounded-lg cursor-pointer w-fit">
+                  {imageData ? "Change" : "Upload"}
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={handleImageChange}
+                    className="hidden"
+                  />
+                </label>
+                {imageData && (
+                  <button
+                    onClick={() => setImageData(null)}
+                    className="text-xs text-slate-400 hover:text-red-600 text-left"
+                  >
+                    Remove image
+                  </button>
+                )}
+              </div>
+            </div>
+            {imageDirty && (
+              <div className="flex items-center gap-2 mt-3">
+                <button
+                  onClick={handleSaveImage}
+                  disabled={savingImage}
+                  className="text-xs px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-medium rounded-lg"
+                >
+                  {savingImage ? "Saving..." : "Save Image"}
+                </button>
+                <button
+                  onClick={() => setImageData(item.image_data ?? null)}
+                  disabled={savingImage}
+                  className="text-xs px-3 py-1.5 border border-slate-200 hover:bg-slate-50 text-slate-600 font-medium rounded-lg"
+                >
+                  Cancel
+                </button>
+              </div>
+            )}
+            {imageError && (
+              <p className="text-xs text-red-600 mt-1.5">{imageError}</p>
+            )}
+          </div>
+
           <AdjustRow
             label="Total Quantity"
             value={totalQuantity}
@@ -469,6 +775,9 @@ export default function Inventory() {
   const [lowStockOnly, setLowStockOnly] = useState(false);
   const [modalItem, setModalItem] = useState(null); // null = closed, {} = add new, item = edit
   const [manageItem, setManageItem] = useState(null); // item currently open in the manage window
+  const [expandedItemId, setExpandedItemId] = useState(null); // row whose Purchase/Sell dropdown is open
+  const [purchaseBusyId, setPurchaseBusyId] = useState(null);
+  const [sellBusyId, setSellBusyId] = useState(null);
 
   async function load() {
     setLoading(true);
@@ -503,6 +812,34 @@ export default function Inventory() {
   useEffect(() => {
     load();
   }, []);
+
+  // Purchase/Sell act directly on an item from its row dropdown — both use
+  // the silent refresh (not `load`) for the same reason ManageModal does:
+  // flipping `loading` would unmount the expanded row and close the
+  // dropdown before the person can see the result.
+  async function handlePurchase(item, quantity, unitCost) {
+    setPurchaseBusyId(item.id);
+    try {
+      await purchaseInventoryItem(item.id, { quantity, unit_cost: unitCost });
+      await refreshItemsSilently();
+    } finally {
+      setPurchaseBusyId(null);
+    }
+  }
+
+  async function handleSell(item, quantity, unitPrice, buyerName) {
+    setSellBusyId(item.id);
+    try {
+      await sellInventoryItem(item.id, {
+        quantity,
+        unit_price: unitPrice,
+        buyer_name: buyerName,
+      });
+      await refreshItemsSilently();
+    } finally {
+      setSellBusyId(null);
+    }
+  }
 
   const categoryOptions = useMemo(
     () => [...new Set(items.map((i) => i.category).filter(Boolean))].sort(),
@@ -664,6 +1001,8 @@ export default function Inventory() {
                 <th className="px-3 py-2 text-center">Total</th>
                 <th className="px-3 py-2 text-center">In Use</th>
                 <th className="px-3 py-2 text-center">Available</th>
+                <th className="px-3 py-2 text-right">Cost</th>
+                <th className="px-3 py-2 text-right">Sale Price</th>
                 <th className="px-3 py-2"></th>
               </tr>
             </thead>
@@ -671,7 +1010,7 @@ export default function Inventory() {
               {filteredItems.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={6}
+                    colSpan={8}
                     className="px-3 py-8 text-center text-slate-400 text-sm"
                   >
                     {items.length === 0
@@ -682,58 +1021,108 @@ export default function Inventory() {
               ) : (
                 filteredItems.map((item) => {
                   const lowStock = item.available_quantity <= LOW_STOCK_THRESHOLD;
+                  const isExpanded = expandedItemId === item.id;
                   return (
-                    <tr
-                      key={item.id}
-                      className="border-t border-slate-100 hover:bg-slate-50/60 align-top"
-                    >
-                      <td className="px-3 py-2">
-                        {item.image_data ? (
-                          <img
-                            src={item.image_data}
-                            alt={item.name}
-                            className="w-28 h-28 object-contain rounded-md border border-slate-200 bg-slate-50 mb-2"
-                          />
-                        ) : (
-                          <div className="w-28 h-28 rounded-md bg-slate-50 border border-slate-100 mb-2" />
-                        )}
-                        <button
-                          onClick={() => setModalItem(item)}
-                          className="block text-sm font-medium text-slate-800 hover:text-blue-600 hover:underline text-left"
-                        >
-                          {item.name}
-                        </button>
-                        {item.notes && (
-                          <p className="text-xs text-slate-400 mt-0.5">
-                            {item.notes}
-                          </p>
-                        )}
-                      </td>
-                      <td className="px-3 py-2 text-xs text-slate-500">
-                        {item.category || "—"}
-                      </td>
-                      <td className="px-3 py-2 text-center text-sm font-semibold text-slate-700">
-                        {item.total_quantity}
-                      </td>
-                      <td className="px-3 py-2 text-center text-sm font-semibold text-slate-700">
-                        {item.in_use_quantity}
-                      </td>
-                      <td className="px-3 py-2 text-center">
-                        <span
-                          className={`text-sm font-semibold px-2 py-0.5 rounded-full ${lowStock ? "bg-red-50 text-red-600" : "text-slate-700"}`}
-                        >
-                          {item.available_quantity}
-                        </span>
-                      </td>
-                      <td className="px-3 py-2 text-right">
-                        <button
-                          onClick={() => setManageItem(item)}
-                          className="text-xs px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-md"
-                        >
-                          Manage
-                        </button>
-                      </td>
-                    </tr>
+                    <React.Fragment key={item.id}>
+                      <tr
+                        onClick={() =>
+                          setExpandedItemId((id) => (id === item.id ? null : item.id))
+                        }
+                        className="border-t border-slate-100 hover:bg-slate-50/60 align-top cursor-pointer"
+                      >
+                        <td className="px-3 py-2">
+                          {item.image_data && (
+                            <img
+                              src={item.image_data}
+                              alt={item.name}
+                              className="w-28 h-28 object-contain rounded-md border border-slate-200 bg-slate-50 mb-2"
+                            />
+                          )}
+                          <div className="flex items-center gap-1.5">
+                            <svg
+                              className={`w-3.5 h-3.5 text-slate-300 flex-shrink-0 transition-transform ${isExpanded ? "rotate-90" : ""}`}
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="2"
+                              viewBox="0 0 24 24"
+                            >
+                              <path d="M9 6l6 6-6 6" />
+                            </svg>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setModalItem(item);
+                              }}
+                              className="block text-sm font-medium text-slate-800 hover:text-blue-600 hover:underline text-left"
+                            >
+                              {item.name}
+                            </button>
+                          </div>
+                          {item.notes && (
+                            <p className="text-xs text-slate-400 mt-0.5 pl-5">
+                              {item.notes}
+                            </p>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 text-xs text-slate-500">
+                          {item.category || "—"}
+                        </td>
+                        <td className="px-3 py-2 text-center text-sm font-semibold text-slate-700">
+                          {item.total_quantity}
+                        </td>
+                        <td className="px-3 py-2 text-center text-sm font-semibold text-slate-700">
+                          {item.in_use_quantity}
+                        </td>
+                        <td className="px-3 py-2 text-center">
+                          <span
+                            className={`text-sm font-semibold px-2 py-0.5 rounded-full ${lowStock ? "bg-red-50 text-red-600" : "text-slate-700"}`}
+                          >
+                            {item.available_quantity}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2 text-right text-xs text-slate-500">
+                          {formatPrice(item.cost_price)}
+                        </td>
+                        <td className="px-3 py-2 text-right text-xs text-slate-500">
+                          {formatPrice(item.sale_price)}
+                        </td>
+                        <td className="px-3 py-2 text-right">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setManageItem(item);
+                            }}
+                            className="text-xs px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-md"
+                          >
+                            Manage
+                          </button>
+                        </td>
+                      </tr>
+                      {isExpanded && (
+                        <tr className="border-t border-slate-100 bg-slate-50/60">
+                          <td colSpan={8} className="px-3 py-4">
+                            <div
+                              className="flex flex-col gap-3 max-w-xl"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <PurchaseRow
+                                currentCostPrice={item.cost_price}
+                                busy={purchaseBusyId === item.id}
+                                onApply={(qty, cost) => handlePurchase(item, qty, cost)}
+                              />
+                              <SellRow
+                                currentSalePrice={item.sale_price}
+                                available={item.available_quantity}
+                                busy={sellBusyId === item.id}
+                                onApply={(qty, price, buyer) =>
+                                  handleSell(item, qty, price, buyer)
+                                }
+                              />
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
                   );
                 })
               )}

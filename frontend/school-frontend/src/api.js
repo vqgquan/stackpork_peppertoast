@@ -107,13 +107,27 @@ export const deleteInventoryItem = (id) => request("DELETE", `/inventory/${id}`)
 export const adjustInventoryItem = (id, field, delta, reason) =>
   request("POST", `/inventory/${id}/adjust`, { field, delta, reason: reason || null });
 
-// Full in/out history ledger (restocks, corrections, and gifts to students).
+// Restock at a known unit cost. Updates the item's cost_price to this
+// value (always the latest) while the price paid is kept forever on the
+// /inventory/history ledger entry this creates.
+// data: { quantity, unit_cost, purchase_date?, reason? }
+export const purchaseInventoryItem = (id, data) => request("POST", `/inventory/${id}/purchase`, data);
+
+// Sell to a customer at a known unit price. Updates the item's sale_price
+// to this value (always the latest) while the price charged — and the
+// cost at the time, for profit — are kept forever on the ledger entry.
+// data: { quantity, unit_price, buyer_name?, sale_date?, notes? }
+export const sellInventoryItem = (id, data) => request("POST", `/inventory/${id}/sell`, data);
+
+// Full in/out history ledger (purchases, corrections, gifts to students,
+// and sales to customers) — this is also the backlog of past prices for
+// an item, since InventoryItem only stores the latest cost/sale price.
 // Pass an item id to scope to a single item, or omit for the whole school.
 export const getInventoryHistory = (itemId) =>
   request("GET", `/inventory/history${itemId != null ? `?item_id=${itemId}` : ""}`);
 
 // --- Gifts ---
 // Full history of inventory items gifted to students (also surfaced,
-// merged with restocks/corrections, via getInventoryHistory above).
+// merged with restocks/corrections/sales, via getInventoryHistory above).
 export const getGifts = (studentId) =>
   request("GET", `/gifts${studentId != null ? `?student_id=${studentId}` : ""}`);

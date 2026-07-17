@@ -13,6 +13,7 @@ import {
   deleteAttendanceRecord,
   updateClassSession,
 } from "../api";
+import InventoryItemSummary from "../components/InventoryItemSummary";
 
 const DAYS = [
   "Monday",
@@ -2262,6 +2263,8 @@ export default function Dashboard() {
       ) : (
         <ReviewsTable allReviews={allReviews} classes={classes} />
       )}
+
+      <InventoryItemSummary />
 
       {selectedSession && (
         <SessionModal

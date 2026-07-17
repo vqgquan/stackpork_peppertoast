@@ -221,13 +221,24 @@ class InventoryItem(Base):
     """A single tracked inventory item (instruments, accessories, supplies).
     total_quantity is everything the school owns; in_use_quantity is how
     much of that is currently checked out / being used, so that
-    available_quantity (computed, not stored) = total - in_use."""
+    available_quantity (computed, not stored) = total - in_use.
+
+    cost_price / sale_price are the LATEST known unit prices, kept current
+    by every purchase/sale (see /inventory/{id}/purchase and /sell below).
+    Prices drift over time, so these two columns are intentionally the only
+    "current" price on the item — the backlog of what was actually paid or
+    charged on any given transaction lives on that transaction's own row
+    (InventoryTransaction.unit_cost / InventorySale.unit_price+unit_cost),
+    which is never rewritten after the fact. To see price history for an
+    item, read its rows from /inventory/history rather than this table."""
     __tablename__ = "inventory_items"
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
     category = Column(String, nullable=True)
     total_quantity = Column(Integer, nullable=False, default=0)
     in_use_quantity = Column(Integer, nullable=False, default=0)
+    cost_price = Column(Integer, nullable=True)
+    sale_price = Column(Integer, nullable=True)
     notes = Column(String, nullable=True)
     # Base64 data-URI string (e.g. "data:image/png;base64,...") — stores the
     # whole image directly in the row, no separate file storage needed.
@@ -251,26 +262,57 @@ class InventoryGift(Base):
     inventory_item = relationship("InventoryItem")
     student = relationship("Student")
 
+class InventorySale(Base):
+    """Records an inventory item sold to a customer (walk-in buyer, not
+    necessarily a student — see InventoryGift for student gifts).
+    unit_price and unit_cost are SNAPSHOTTED at the moment of sale, so
+    historical profit stays accurate even after the item's current
+    cost_price/sale_price later change — like InventoryGift, this row is
+    the permanent record and is never adjusted after the fact. unit_cost
+    is copied from the item's cost_price at sale time and may be null if
+    no cost was on file yet."""
+    __tablename__ = "inventory_sales"
+    id = Column(Integer, primary_key=True, index=True)
+    inventory_item_id = Column(Integer, ForeignKey("inventory_items.id"), nullable=False)
+    quantity = Column(Integer, nullable=False)
+    unit_price = Column(Integer, nullable=False)
+    unit_cost = Column(Integer, nullable=True)
+    buyer_name = Column(String, nullable=True)
+    sale_date = Column(Date, nullable=False)
+    notes = Column(String, nullable=True)
+    inventory_item = relationship("InventoryItem")
+
 class InventoryTransaction(Base):
     """Ledger entry for every change to an item's total_quantity — i.e.
-    stock physically entering or leaving the school (restocks, corrections,
-    breakage/loss write-offs, and gifts). quantity_delta is positive for
-    stock coming IN and negative for stock going OUT.
+    stock physically entering or leaving the school (restocks, purchases,
+    corrections, breakage/loss write-offs, gifts, and sales).
+    quantity_delta is positive for stock coming IN and negative for stock
+    going OUT.
+
+    unit_cost is set only on purchase entries (stock coming in at a known
+    price) — it's the historical backlog of what was actually paid for that
+    batch, distinct from InventoryItem.cost_price which always holds the
+    latest price. Corrections and manual edits leave it null.
 
     Gifts create BOTH an InventoryGift row (the gift-specific record, with
     student/enrollment) AND an InventoryTransaction row (linked via
-    gift_id) so that the item's full in/out history lives in one place —
-    the history endpoint below reads gift details off the linked
-    InventoryGift instead of duplicating student/enrollment info here."""
+    gift_id); sales likewise create both an InventorySale row (buyer,
+    price, snapshotted cost) AND a linked InventoryTransaction row (via
+    sale_id) — so the item's full in/out history lives in one place, and
+    the history endpoint below reads the extra detail off the linked
+    InventoryGift/InventorySale instead of duplicating it here."""
     __tablename__ = "inventory_transactions"
     id = Column(Integer, primary_key=True, index=True)
     inventory_item_id = Column(Integer, ForeignKey("inventory_items.id", ondelete="CASCADE"), nullable=False)
     quantity_delta = Column(Integer, nullable=False)
     reason = Column(String, nullable=True)
     transaction_date = Column(Date, nullable=False)
+    unit_cost = Column(Integer, nullable=True)
     gift_id = Column(Integer, ForeignKey("inventory_gifts.id", ondelete="CASCADE"), nullable=True)
+    sale_id = Column(Integer, ForeignKey("inventory_sales.id", ondelete="CASCADE"), nullable=True)
     inventory_item = relationship("InventoryItem")
     gift = relationship("InventoryGift")
+    sale = relationship("InventorySale")
 
 Base.metadata.create_all(bind=engine)
 
@@ -406,6 +448,8 @@ class InventoryItemCreate(BaseModel):
     category: Optional[str] = None
     total_quantity: int = Field(default=0, ge=0)
     in_use_quantity: int = Field(default=0, ge=0)
+    cost_price: Optional[int] = Field(default=None, ge=0)  # latest known cost per unit
+    sale_price: Optional[int] = Field(default=None, ge=0)  # latest known sale price per unit
     notes: Optional[str] = None
     image_data: Optional[str] = None  # base64 data-URI string, or None to clear
 
@@ -422,6 +466,8 @@ class InventoryItemOut(BaseModel):
     total_quantity: int
     in_use_quantity: int
     available_quantity: int
+    cost_price: Optional[int] = None
+    sale_price: Optional[int] = None
     notes: Optional[str] = None
     image_data: Optional[str] = None
     class Config: from_attributes = True
@@ -431,6 +477,7 @@ def build_inventory_item_out(i: InventoryItem) -> InventoryItemOut:
         id=i.id, name=i.name, category=i.category,
         total_quantity=i.total_quantity, in_use_quantity=i.in_use_quantity,
         available_quantity=i.total_quantity - i.in_use_quantity,
+        cost_price=i.cost_price, sale_price=i.sale_price,
         notes=i.notes, image_data=i.image_data,
     )
 
@@ -438,6 +485,38 @@ class InventoryAdjustRequest(BaseModel):
     field: str = Field(..., pattern="^(total_quantity|in_use_quantity)$")
     delta: int  # positive to increase, negative to decrease
     reason: Optional[str] = None  # e.g. "Restock", "Damaged/lost" — logged to the history ledger when field is total_quantity
+
+class InventoryPurchaseRequest(BaseModel):
+    """Restock with a known price. Bumps total_quantity and updates the
+    item's cost_price to this unit_cost (so the item always shows the
+    latest price paid) while the price actually paid on this batch is kept
+    forever on the resulting InventoryTransaction row."""
+    quantity: int = Field(..., gt=0)
+    unit_cost: int = Field(..., ge=0)
+    purchase_date: Optional[date] = None
+    reason: Optional[str] = None  # defaults to "Purchase"
+
+class InventorySellRequest(BaseModel):
+    """Sell to a customer at a known price. Decrements total_quantity and
+    updates the item's sale_price to this unit_price (latest price
+    charged), while the price actually charged — and the cost at the time,
+    for profit — are kept forever on the resulting InventorySale row."""
+    quantity: int = Field(..., gt=0)
+    unit_price: int = Field(..., ge=0)
+    buyer_name: Optional[str] = None
+    sale_date: Optional[date] = None
+    notes: Optional[str] = None
+
+class InventorySaleOut(BaseModel):
+    id: int
+    inventory_item_id: int
+    quantity: int
+    unit_price: int
+    unit_cost: Optional[int] = None
+    buyer_name: Optional[str] = None
+    sale_date: date
+    notes: Optional[str] = None
+    class Config: from_attributes = True
 
 # --- Inventory gift schemas ---
 class GiftCreate(BaseModel):
@@ -464,10 +543,13 @@ class GiftRecordOut(BaseModel):
     gifted_date: date
 
 class InventoryHistoryEntryOut(BaseModel):
-    """One row in an item's in/out ledger. kind = 'adjustment' for manual
-    restocks/corrections (from InventoryTransaction), or 'gift' for stock
-    given away to a student as part of a class registration (from
-    InventoryGift, joined through to the enrollment's class/session)."""
+    """One row in an item's in/out ledger. kind = 'purchase' for restocks
+    recorded with a known unit_cost, 'adjustment' for corrections/manual
+    edits/write-offs with no price attached, 'gift' for stock given to a
+    student (from InventoryGift), or 'sale' for stock sold to a customer
+    (from InventorySale). Since prices drift over time, this ledger IS the
+    backlog of historical prices for an item — unit_cost/unit_price/profit
+    are only populated on the entry kinds where they're meaningful."""
     id: str
     inventory_item_id: int
     item_name: str
@@ -475,9 +557,13 @@ class InventoryHistoryEntryOut(BaseModel):
     date: date
     quantity_delta: int  # positive = in, negative = out
     reason: Optional[str] = None
-    kind: str  # "adjustment" | "gift"
+    kind: str  # "purchase" | "adjustment" | "gift" | "sale"
+    unit_cost: Optional[int] = None
+    unit_price: Optional[int] = None
+    profit: Optional[int] = None
     student_id: Optional[int] = None
     student_name: Optional[str] = None
+    buyer_name: Optional[str] = None
     class_name: Optional[str] = None
     schedule_label: Optional[str] = None
 
@@ -1791,6 +1877,7 @@ def create_inventory_item(payload: InventoryItemCreate, db: Session = Depends(ge
             quantity_delta=item.total_quantity,
             reason="Initial stock",
             transaction_date=date.today(),
+            unit_cost=item.cost_price,
         ))
     db.commit()
     db.refresh(item)
@@ -1805,7 +1892,8 @@ def update_inventory_item(id: int, payload: InventoryItemCreate, db: Session = D
     for key, value in payload.model_dump().items():
         setattr(item, key, value)
     # If editing the item changed its stock count directly (rather than via
-    # /adjust), log the difference so it still shows up in the history.
+    # /purchase or /adjust), log the difference so it still shows up in the
+    # history — but with no unit_cost, since no price was specified here.
     delta = item.total_quantity - old_total
     if delta != 0:
         db.add(InventoryTransaction(
@@ -1841,6 +1929,8 @@ def adjust_inventory_item(id: int, payload: InventoryAdjustRequest, db: Session 
     setattr(item, payload.field, new_value)
     # Only total_quantity changes represent stock physically entering/leaving
     # the school, so only those get logged to the in/out history ledger.
+    # No unit_cost here — this endpoint is for corrections/write-offs with
+    # no price attached; use /purchase for priced restocks.
     if payload.field == "total_quantity" and payload.delta != 0:
         db.add(InventoryTransaction(
             inventory_item_id=item.id,
@@ -1852,15 +1942,80 @@ def adjust_inventory_item(id: int, payload: InventoryAdjustRequest, db: Session 
     db.refresh(item)
     return build_inventory_item_out(item)
 
+@app.post("/inventory/{id}/purchase", response_model=InventoryItemOut)
+def purchase_inventory_item(id: int, payload: InventoryPurchaseRequest, db: Session = Depends(get_db)):
+    """Restock at a known unit cost. Updates the item's cost_price to the
+    latest value while the price paid for this specific batch is preserved
+    forever on the logged InventoryTransaction row (see model docstring)."""
+    item = db.query(InventoryItem).filter(InventoryItem.id == id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Inventory item not found")
+    item.total_quantity += payload.quantity
+    item.cost_price = payload.unit_cost
+    db.add(InventoryTransaction(
+        inventory_item_id=item.id,
+        quantity_delta=payload.quantity,
+        reason=payload.reason or "Purchase",
+        transaction_date=payload.purchase_date or date.today(),
+        unit_cost=payload.unit_cost,
+    ))
+    db.commit()
+    db.refresh(item)
+    return build_inventory_item_out(item)
+
+@app.post("/inventory/{id}/sell", response_model=InventoryItemOut)
+def sell_inventory_item(id: int, payload: InventorySellRequest, db: Session = Depends(get_db)):
+    """Sell to a customer at a known unit price. Updates the item's
+    sale_price to the latest value; the price charged and the cost at the
+    time (for profit) are preserved forever on the resulting InventorySale
+    row (see model docstring)."""
+    item = db.query(InventoryItem).filter(InventoryItem.id == id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Inventory item not found")
+    available = item.total_quantity - item.in_use_quantity
+    if payload.quantity > available:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Not enough stock to sell {payload.quantity} (only {available} available)",
+        )
+    item.total_quantity -= payload.quantity
+    item.sale_price = payload.unit_price
+    sale = InventorySale(
+        inventory_item_id=item.id,
+        quantity=payload.quantity,
+        unit_price=payload.unit_price,
+        unit_cost=item.cost_price,  # snapshot the current cost for historical profit
+        buyer_name=payload.buyer_name,
+        sale_date=payload.sale_date or date.today(),
+        notes=payload.notes,
+    )
+    db.add(sale)
+    db.flush()
+    db.add(InventoryTransaction(
+        inventory_item_id=item.id,
+        quantity_delta=-payload.quantity,
+        reason="Sale",
+        transaction_date=sale.sale_date,
+        sale_id=sale.id,
+    ))
+    db.commit()
+    db.refresh(item)
+    return build_inventory_item_out(item)
+
 @app.get("/inventory/history", response_model=list[InventoryHistoryEntryOut])
 def get_inventory_history(item_id: Optional[int] = Query(None), db: Session = Depends(get_db)):
-    """Combined in/out ledger for inventory items: manual restocks/
-    corrections (InventoryTransaction rows not tied to a gift) plus items
-    gifted to students (InventoryGift rows, enriched with student name and
-    the class/session from the linked enrollment)."""
+    """Combined in/out ledger for inventory items: purchases and manual
+    corrections (InventoryTransaction rows not tied to a gift or sale),
+    items gifted to students (InventoryGift), and items sold to customers
+    (InventorySale, enriched with profit against the cost snapshotted at
+    sale time). Since prices drift, this ledger doubles as the price
+    backlog for an item — see InventoryItem docstring."""
     entries: list[InventoryHistoryEntryOut] = []
 
-    txn_q = db.query(InventoryTransaction).filter(InventoryTransaction.gift_id.is_(None))
+    txn_q = db.query(InventoryTransaction).filter(
+        InventoryTransaction.gift_id.is_(None),
+        InventoryTransaction.sale_id.is_(None),
+    )
     if item_id is not None:
         txn_q = txn_q.filter(InventoryTransaction.inventory_item_id == item_id)
     for t in txn_q.all():
@@ -1872,7 +2027,8 @@ def get_inventory_history(item_id: Optional[int] = Query(None), db: Session = De
             date=t.transaction_date,
             quantity_delta=t.quantity_delta,
             reason=t.reason,
-            kind="adjustment",
+            kind="purchase" if t.unit_cost is not None else "adjustment",
+            unit_cost=t.unit_cost,
         ))
 
     gift_q = db.query(InventoryGift)
@@ -1895,6 +2051,26 @@ def get_inventory_history(item_id: Optional[int] = Query(None), db: Session = De
             student_name=g.student.name,
             class_name=class_name,
             schedule_label=schedule_label_for(enrollment),
+        ))
+
+    sale_q = db.query(InventorySale)
+    if item_id is not None:
+        sale_q = sale_q.filter(InventorySale.inventory_item_id == item_id)
+    for s in sale_q.all():
+        profit = (s.unit_price - s.unit_cost) * s.quantity if s.unit_cost is not None else None
+        entries.append(InventoryHistoryEntryOut(
+            id=f"sale-{s.id}",
+            inventory_item_id=s.inventory_item_id,
+            item_name=s.inventory_item.name,
+            category=s.inventory_item.category,
+            date=s.sale_date,
+            quantity_delta=-s.quantity,
+            reason=s.notes or "Sale",
+            kind="sale",
+            unit_price=s.unit_price,
+            unit_cost=s.unit_cost,
+            profit=profit,
+            buyer_name=s.buyer_name,
         ))
 
     entries.sort(key=lambda e: (e.date, e.id), reverse=True)
